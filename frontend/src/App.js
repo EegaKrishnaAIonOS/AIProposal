@@ -245,11 +245,17 @@ const RFPSolutionGenerator = () => {
                   </div>
                 ) : (
                   <div className="space-y-6">
-                    {/* Title Section */}
-                    <div className="border-b border-gray-200 pb-4">
-                      <h1 className="text-2xl font-bold text-gray-900 mb-2">{solution.title}</h1>
-                      <p className="text-gray-600">{solution.date}</p>
+                    {/* Cover Page */}
+                    <div className="border border-dashed border-gray-300 rounded-lg p-6">
+                      <div className="flex flex-col items-center text-center">
+                        <img src="/api/logo" alt="Company Logo" className="h-20 w-auto mb-4" />
+                        <h1 className="text-2xl font-bold text-gray-900 mb-2">{solution.title}</h1>
+                        <p className="text-gray-600">{solution.date}</p>
+                      </div>
                     </div>
+
+                    {/* Visual Page Break */}
+                    <div className="border-t border-gray-200 my-4"></div>
 
                     {/* Problem Statement */}
                     <div>
