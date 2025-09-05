@@ -82,6 +82,13 @@ def extract_text_from_doc(file_path: str) -> str:
     # For now, we'll return an error message
     raise HTTPException(status_code=400, detail="Legacy .doc format not supported. Please convert to .docx")
 
+def _get_logo_path() -> str:
+    """Resolve absolute path to AIONOS_logo.png at project root."""
+    backend_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.dirname(backend_dir)
+    logo_path = os.path.join(project_root, 'AIONOS_logo.png')
+    return logo_path
+
 # LLM Processing
 async def analyze_rfp_with_groq(rfp_text: str) -> GeneratedSolution:
     """Analyze RFP text using Groq and generate solution"""
@@ -211,17 +218,30 @@ async def analyze_rfp_with_groq(rfp_text: str) -> GeneratedSolution:
 def create_word_document(solution: GeneratedSolution) -> str:
     """Create a Word document from the generated solution"""
     doc = Document()
-    
+
+    # Add company logo centered on the first page if available
+    logo_path = _get_logo_path()
+    if os.path.exists(logo_path):
+        try:
+            picture = doc.add_picture(logo_path, width=Inches(2.5))
+            # Center align the paragraph that contains the picture
+            last_paragraph = doc.paragraphs[-1]
+            last_paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        except Exception:
+            # If image insertion fails, continue without blocking document creation
+            pass
+
     # Set document title
     title = doc.add_heading(solution.title, 0)
     title.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    
+
     # Add date
     date_p = doc.add_paragraph(solution.date)
     date_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    
+
+    # Page break to start content from second page
     doc.add_page_break()
-    
+
     # Table of Contents placeholder
     doc.add_heading('Contents', level=1)
     toc_items = [
@@ -365,6 +385,14 @@ async def download_solution(solution: GeneratedSolution):
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error creating document: {str(e)}")
+
+@app.get("/api/logo")
+async def get_company_logo():
+    """Serve the company logo image for frontend preview."""
+    logo_path = _get_logo_path()
+    if not os.path.exists(logo_path):
+        raise HTTPException(status_code=404, detail="Logo not found")
+    return FileResponse(logo_path, media_type='image/png', filename='AIONOS_logo.png')
 
 @app.get("/api/health")
 async def health_check():
