@@ -1,0 +1,320 @@
+import React, { useState } from 'react';
+import { ChevronDown, ChevronRight, FileText, Plus, X } from 'lucide-react';
+
+function Section({ title, children, defaultOpen = true }) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div className="border border-gray-200 rounded-lg mb-4">
+      <button onClick={() => setOpen(!open)} className="w-full flex items-center justify-between p-4">
+        <h3 className="text-lg font-semibold text-gray-900">{title}</h3>
+        {open ? <ChevronDown className="h-5 w-5 text-gray-500"/> : <ChevronRight className="h-5 w-5 text-gray-500"/>}
+      </button>
+      {open && <div className="px-4 pb-4">{children}</div>}
+    </div>
+  );
+}
+
+export default function PreviewCard({ solution, editable = false, onChange }) {
+  if (!solution) {
+    return (
+      <div className="text-center py-12">
+        <FileText className="h-24 w-24 text-gray-300 mx-auto mb-4" />
+        <h3 className="text-lg font-medium text-gray-900 mb-2">No Solution Generated Yet</h3>
+        <p className="text-gray-500">Upload an RFP document and click "Generate Solution" to see the preview here.</p>
+      </div>
+    );
+  }
+
+  const updateField = (field, value) => {
+    const updated = { ...solution, [field]: value };
+    onChange?.(updated);
+  };
+
+  const updateListItem = (field, index, value) => {
+    const list = [...(solution[field] || [])];
+    list[index] = value;
+    updateField(field, list);
+  };
+
+  const addListItem = (field, emptyValue) => {
+    const list = [...(solution[field] || [])];
+    list.push(emptyValue);
+    updateField(field, list);
+  };
+
+  const removeListItem = (field, index) => {
+    const list = [...(solution[field] || [])];
+    list.splice(index, 1);
+    updateField(field, list);
+  };
+
+  const updateApproachItem = (index, patch) => {
+    const arr = [...(solution.solution_approach || [])];
+    arr[index] = { ...arr[index], ...patch };
+    updateField('solution_approach', arr);
+  };
+
+  const addApproachItem = () => {
+    addListItem('solution_approach', { title: 'New Step', description: '' });
+  };
+
+  const removeApproachItem = (index) => {
+    const arr = [...(solution.solution_approach || [])];
+    arr.splice(index, 1);
+    updateField('solution_approach', arr);
+  };
+
+  const updateMilestone = (index, patch) => {
+    const arr = [...(solution.milestones || [])];
+    arr[index] = { ...arr[index], ...patch };
+    updateField('milestones', arr);
+  };
+
+  const addMilestone = () => {
+    addListItem('milestones', { phase: 'New Phase', duration: '1 week', description: '' });
+  };
+
+  const removeMilestone = (index) => {
+    const arr = [...(solution.milestones || [])];
+    arr.splice(index, 1);
+    updateField('milestones', arr);
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="border border-dashed border-gray-300 rounded-lg p-6">
+        <div className="flex flex-col items-center text-center">
+          <img src="/api/logo" alt="Company Logo" className="h-20 w-auto mb-4" />
+          {editable ? (
+            <input
+              className="text-2xl font-bold text-center text-gray-900 mb-2 border-b border-gray-200 focus:outline-none focus:ring-0"
+              value={solution.title}
+              onChange={e => updateField('title', e.target.value)}
+            />
+          ) : (
+            <h1 className="text-2xl font-bold text-gray-900 mb-2">{solution.title}</h1>
+          )}
+          {editable ? (
+            <input
+              className="text-gray-600 text-center border-b border-gray-200 focus:outline-none focus:ring-0"
+              value={solution.date}
+              onChange={e => updateField('date', e.target.value)}
+            />
+          ) : (
+            <p className="text-gray-600">{solution.date}</p>
+          )}
+        </div>
+      </div>
+
+      <div className="border-t border-gray-200 my-4"></div>
+
+      <Section title="Problem Statement">
+        {editable ? (
+          <textarea
+            className="w-full bg-blue-50 p-4 rounded-lg text-gray-700 border border-blue-100 focus:outline-none focus:ring"
+            rows={4}
+            value={solution.problem_statement}
+            onChange={e => updateField('problem_statement', e.target.value)}
+          />
+        ) : (
+          <div className="bg-blue-50 p-4 rounded-lg">
+            <p className="text-gray-700">{solution.problem_statement}</p>
+          </div>
+        )}
+      </Section>
+
+      {solution.key_challenges?.length > 0 && (
+        <Section title="Key Challenges">
+          {editable ? (
+            <div className="space-y-2">
+              {solution.key_challenges.map((challenge, idx) => (
+                <div key={idx} className="flex items-center gap-2">
+                  <input
+                    className="flex-1 border rounded px-3 py-2 text-sm"
+                    value={challenge}
+                    onChange={e => updateListItem('key_challenges', idx, e.target.value)}
+                  />
+                  <button onClick={() => removeListItem('key_challenges', idx)} className="p-2 text-red-600 hover:bg-red-50 rounded">
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+              ))}
+              <button onClick={() => addListItem('key_challenges', '')} className="text-blue-600 text-sm inline-flex items-center">
+                <Plus className="h-4 w-4 mr-1"/> Add challenge
+              </button>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {solution.key_challenges.map((challenge, idx) => (
+                <div key={idx} className="flex items-start">
+                  <div className="w-2 h-2 bg-blue-600 rounded-full mt-2 mr-3 flex-shrink-0"></div>
+                  <p className="text-gray-700">{challenge}</p>
+                </div>
+              ))}
+            </div>
+          )}
+        </Section>
+      )}
+
+      {solution.solution_approach?.length > 0 && (
+        <Section title="Our Solution Approach">
+          {editable ? (
+            <div className="space-y-4">
+              {solution.solution_approach.map((step, index) => (
+                <div key={index} className="border border-gray-200 rounded-lg p-4">
+                  <div className="flex gap-2">
+                    <input
+                      className="flex-1 font-semibold text-gray-900 mb-2 border-b focus:outline-none"
+                      value={step.title}
+                      onChange={e => updateApproachItem(index, { title: e.target.value })}
+                    />
+                    <button onClick={() => removeApproachItem(index)} className="p-2 text-red-600 hover:bg-red-50 rounded self-start">
+                      <X className="h-4 w-4" />
+                    </button>
+                  </div>
+                  <textarea
+                    className="w-full text-gray-700 border rounded px-3 py-2"
+                    rows={3}
+                    value={step.description}
+                    onChange={e => updateApproachItem(index, { description: e.target.value })}
+                  />
+                </div>
+              ))}
+              <button onClick={addApproachItem} className="text-blue-600 text-sm inline-flex items-center">
+                <Plus className="h-4 w-4 mr-1"/> Add step
+              </button>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              {solution.solution_approach.map((step, index) => (
+                <div key={index} className="border border-gray-200 rounded-lg p-4">
+                  <h4 className="font-semibold text-gray-900 mb-2">{step.title}</h4>
+                  <p className="text-gray-700">{step.description}</p>
+                </div>
+              ))}
+            </div>
+          )}
+        </Section>
+      )}
+
+      {solution.milestones?.length > 0 && (
+        <Section title="Key Milestones">
+          {editable ? (
+            <div className="space-y-3">
+              {solution.milestones.map((m, idx) => (
+                <div key={idx} className="grid grid-cols-1 md:grid-cols-12 gap-2 items-start">
+                  <input className="md:col-span-4 border rounded px-3 py-2 text-sm" value={m.phase} onChange={e => updateMilestone(idx, { phase: e.target.value })} />
+                  <input className="md:col-span-2 border rounded px-3 py-2 text-sm" value={m.duration} onChange={e => updateMilestone(idx, { duration: e.target.value })} />
+                  <textarea className="md:col-span-5 border rounded px-3 py-2 text-sm" rows={2} value={m.description} onChange={e => updateMilestone(idx, { description: e.target.value })} />
+                  <button onClick={() => removeMilestone(idx)} className="md:col-span-1 p-2 text-red-600 hover:bg-red-50 rounded justify-self-start md:justify-self-auto">
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+              ))}
+              <button onClick={addMilestone} className="text-blue-600 text-sm inline-flex items-center">
+                <Plus className="h-4 w-4 mr-1"/> Add milestone
+              </button>
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="min-w-full text-left border border-gray-200 rounded-lg overflow-hidden">
+                <thead className="bg-gray-50">
+                  <tr>
+                    <th className="px-4 py-2 text-sm font-semibold text-gray-700 border-b">Phase</th>
+                    <th className="px-4 py-2 text-sm font-semibold text-gray-700 border-b">Duration</th>
+                    <th className="px-4 py-2 text-sm font-semibold text-gray-700 border-b">Description</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {solution.milestones.map((m, idx) => (
+                    <tr key={idx} className="odd:bg-white even:bg-gray-50">
+                      <td className="px-4 py-2 border-b align-top">{m.phase}</td>
+                      <td className="px-4 py-2 border-b align-top">{m.duration}</td>
+                      <td className="px-4 py-2 border-b align-top">{m.description}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </Section>
+      )}
+
+      {solution.technical_stack?.length > 0 && (
+        <Section title="Technical Stack">
+          {editable ? (
+            <div className="space-y-2">
+              {solution.technical_stack.map((tech, i) => (
+                <div key={i} className="flex items-center gap-2">
+                  <input className="flex-1 border rounded px-3 py-2 text-sm" value={tech} onChange={e => updateListItem('technical_stack', i, e.target.value)} />
+                  <button onClick={() => removeListItem('technical_stack', i)} className="p-2 text-red-600 hover:bg-red-50 rounded">
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+              ))}
+              <button onClick={() => addListItem('technical_stack', '')} className="text-blue-600 text-sm inline-flex items-center">
+                <Plus className="h-4 w-4 mr-1"/> Add technology
+              </button>
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              {solution.technical_stack.map((tech, index) => (
+                <div key={index} className="bg-blue-100 text-blue-800 px-3 py-2 rounded-lg text-center text-sm font-medium">
+                  {tech}
+                </div>
+              ))}
+            </div>
+          )}
+        </Section>
+      )}
+
+      {solution.objectives?.length > 0 && (
+        <Section title="Objectives">
+          {editable ? (
+            <div className="space-y-2">
+              {solution.objectives.map((o, i) => (
+                <div key={i} className="flex items-center gap-2">
+                  <input className="flex-1 border rounded px-3 py-2 text-sm" value={o} onChange={e => updateListItem('objectives', i, e.target.value)} />
+                  <button onClick={() => removeListItem('objectives', i)} className="p-2 text-red-600 hover:bg-red-50 rounded">
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+              ))}
+              <button onClick={() => addListItem('objectives', '')} className="text-blue-600 text-sm inline-flex items-center">
+                <Plus className="h-4 w-4 mr-1"/> Add objective
+              </button>
+            </div>
+          ) : (
+            <ul className="list-disc pl-6 text-gray-700">
+              {solution.objectives.map((o, i) => <li key={i} className="mb-1">{o}</li>)}
+            </ul>
+          )}
+        </Section>
+      )}
+
+      {solution.acceptance_criteria?.length > 0 && (
+        <Section title="Acceptance Criteria">
+          {editable ? (
+            <div className="space-y-2">
+              {solution.acceptance_criteria.map((c, i) => (
+                <div key={i} className="flex items-center gap-2">
+                  <input className="flex-1 border rounded px-3 py-2 text-sm" value={c} onChange={e => updateListItem('acceptance_criteria', i, e.target.value)} />
+                  <button onClick={() => removeListItem('acceptance_criteria', i)} className="p-2 text-red-600 hover:bg-red-50 rounded">
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+              ))}
+              <button onClick={() => addListItem('acceptance_criteria', '')} className="text-blue-600 text-sm inline-flex items-center">
+                <Plus className="h-4 w-4 mr-1"/> Add criteria
+              </button>
+            </div>
+          ) : (
+            <ul className="list-disc pl-6 text-gray-700">
+              {solution.acceptance_criteria.map((c, i) => <li key={i} className="mb-1">{c}</li>)}
+            </ul>
+          )}
+        </Section>
+      )}
+    </div>
+  );
+} 

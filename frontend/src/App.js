@@ -1,32 +1,21 @@
-import React, {useState, useRef} from 'react';
-import {Upload, FileText, Download, Loader2, CheckCircle, AlertCircle, Settings} from 'lucide-react';
+import React, {useState} from 'react';
+import { AlertCircle, Settings } from 'lucide-react';
+import FileUploader from './components/FileUploader.jsx';
+import ActionButtons from './components/ActionButtons.jsx';
+import PreviewCard from './components/PreviewCard.jsx';
 
 const RFPSolutionGenerator = () => {
   const [file, setFile] = useState(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [solution, setSolution] = useState(null);
   const [error, setError] = useState(null);
-  const [uploadStatus, setUploadStatus] = useState('idle');
-  const fileInputRef = useRef(null);
+  const [downloaded, setDownloaded] = useState(false);
+  const [isEditing, setIsEditing] = useState(false);
 
-  const handleFileUpload = (event) => {
-    const uploadedFile = event.target.files[0];
-    if (uploadedFile) {
-      const allowedTypes = ['application/pdf','application/vnd.openxmlformats-officedocument.wordprocessingml.document','application/msword'];
-      if (!allowedTypes.includes(uploadedFile.type)) {
-        setError('Please upload a PDF, DOCX, or DOC file');
-        return;
-      }
-
-      if(uploadedFile.size > 10 * 1024 * 1024) {
-        setError("File size exceeds 10MB limit");
-        return;
-      }
-
-      setFile(uploadedFile);
-      setError(null);
-      setUploadStatus('success');
-    }
+  const onFileSelected = (f) => {
+    setFile(f);
+    setError(null);
+    setDownloaded(false);
   };
 
   const generateSolution = async () => {
@@ -36,6 +25,7 @@ const RFPSolutionGenerator = () => {
     }
     setIsProcessing(true);
     setError(null);
+    setDownloaded(false);
     try {
       const formData = new FormData();
       formData.append('file', file);
@@ -46,11 +36,14 @@ const RFPSolutionGenerator = () => {
       });
 
       if (!response.ok) {
-        throw new Error('Failed to generate solution');
+        let msg = 'Failed to generate solution';
+        try { const j = await response.json(); if (j?.detail) msg = j.detail; } catch {}
+        throw new Error(msg);
       }
 
       const data = await response.json();
       setSolution(data);
+      setIsEditing(false);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -71,7 +64,9 @@ const RFPSolutionGenerator = () => {
       });
 
       if (!response.ok) {
-        throw new Error('Failed to download solution');
+        let msg = 'Failed to download solution';
+        try { const j = await response.json(); if (j?.detail) msg = j.detail; } catch {}
+        throw new Error(msg);
       }
 
       const blob = await response.blob();
@@ -83,8 +78,9 @@ const RFPSolutionGenerator = () => {
       document.body.appendChild(a);
       a.click();
       window.URL.revokeObjectURL(url);
+      setDownloaded(true);
     } catch (err) {
-      setError('Failed to download solution document');
+      setError(err.message);
     }
   };
 
@@ -92,10 +88,13 @@ const RFPSolutionGenerator = () => {
     setFile(null);
     setSolution(null);
     setError(null);
-    setUploadStatus('idle');
-    if (fileInputRef.current) {
-      fileInputRef.current.value = '';
-    }
+    setDownloaded(false);
+    setIsEditing(false);
+  };
+
+  const scrollToUpload = () => {
+    const el = document.getElementById('upload-section');
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
   };
 
   return (
@@ -115,86 +114,72 @@ const RFPSolutionGenerator = () => {
         </div>
       </header>
 
+      {/* Hero / Home section */}
+      <section className="bg-gradient-to-r from-blue-50 to-indigo-50 border-b border-gray-200">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-8 items-center">
+            <div>
+              <h2 className="text-3xl font-bold text-gray-900 mb-3">Generate Professional Proposals from RFPs</h2>
+              <p className="text-gray-600 mb-6">Upload your PDF or DOCX RFP and instantly get a structured, client-ready technical proposal powered by AI.</p>
+              <button onClick={scrollToUpload} className="bg-blue-600 text-white py-2 px-5 rounded-md hover:bg-blue-700">
+                Upload RFP and Generate Proposal
+              </button>
+            </div>
+            <div className="hidden md:block">
+              <div className="bg-white border border-gray-200 rounded-lg p-4 shadow-sm">
+                {solution ? (
+                  <div>
+                    <div className="flex flex-col items-center text-center mb-4">
+                      <img src="/api/logo" alt="Company Logo" className="h-10 w-auto mb-2" />
+                      <h3 className="text-lg font-semibold text-gray-900">{solution.title}</h3>
+                      <p className="text-xs text-gray-600">{solution.date}</p>
+                    </div>
+                    <div className="space-y-2 text-sm">
+                      <div className="bg-blue-50 p-3 rounded">
+                        <p className="text-gray-700 line-clamp-3">{solution.problem_statement}</p>
+                      </div>
+                      {solution.key_challenges?.length > 0 && (
+                        <ul className="list-disc pl-5 text-gray-700">
+                          {solution.key_challenges.slice(0,3).map((c,i) => <li key={i}>{c}</li>)}
+                        </ul>
+                      )}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="h-40 bg-gray-50 border border-dashed border-gray-300 rounded flex items-center justify-center text-gray-400">Proposal Preview</div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
           {/* Left Panel - Upload & Controls */}
-          <div className="lg:col-span-1">
+          <div className="lg:col-span-1" id="upload-section">
             <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
               <h2 className="text-lg font-semibold text-gray-900 mb-4">Document Upload</h2>
-              
-              {/* File Upload Area */}
-              <div className="mb-6">
-                <div 
-                  className={`border-2 border-dashed rounded-lg p-6 text-center transition-colors ${
-                    uploadStatus === 'success' 
-                      ? 'border-green-300 bg-green-50' 
-                      : 'border-gray-300 hover:border-gray-400'
-                  }`}
-                  onClick={() => fileInputRef.current?.click()}
-                >
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    accept=".pdf,.doc,.docx"
-                    onChange={handleFileUpload}
-                    className="hidden"
-                  />
-                  
-                  {uploadStatus === 'success' ? (
-                    <div className="flex flex-col items-center">
-                      <CheckCircle className="h-12 w-12 text-green-500 mb-3" />
-                      <p className="text-sm font-medium text-green-700">{file?.name}</p>
-                      <p className="text-xs text-green-600 mt-1">Ready for processing</p>
-                    </div>
-                  ) : (
-                    <div className="flex flex-col items-center cursor-pointer">
-                      <Upload className="h-12 w-12 text-gray-400 mb-3" />
-                      <p className="text-sm font-medium text-gray-700">Upload RFP Document</p>
-                      <p className="text-xs text-gray-500 mt-1">PDF or Word documents up to 10MB</p>
-                    </div>
-                  )}
+
+              <FileUploader onFileSelected={onFileSelected} error={error} onError={setError} />
+
+              {isProcessing && (
+                <div className="mb-4">
+                  <div className="h-2 w-full bg-blue-100 rounded overflow-hidden">
+                    <div className="h-2 w-full bg-blue-600 animate-pulse"></div>
+                  </div>
+                  <p className="text-xs text-gray-500 mt-2">Processing... this may take a few seconds.</p>
                 </div>
-              </div>
+              )}
 
-              {/* Action Buttons */}
-              <div className="space-y-3">
-                <button
-                  onClick={generateSolution}
-                  disabled={!file || isProcessing}
-                  className="w-full bg-blue-600 text-white py-2 px-4 rounded-md hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed flex items-center justify-center"
-                >
-                  {isProcessing ? (
-                    <>
-                      <Loader2 className="animate-spin h-4 w-4 mr-2" />
-                      Generating Solution...
-                    </>
-                  ) : (
-                    <>
-                      <FileText className="h-4 w-4 mr-2" />
-                      Generate Solution
-                    </>
-                  )}
-                </button>
-
-                {solution && (
-                  <button
-                    onClick={downloadSolution}
-                    className="w-full bg-green-600 text-white py-2 px-4 rounded-md hover:bg-green-700 flex items-center justify-center"
-                  >
-                    <Download className="h-4 w-4 mr-2" />
-                    Download Proposal
-                  </button>
-                )}
-
-                {(file || solution) && (
-                  <button
-                    onClick={resetForm}
-                    className="w-full bg-gray-500 text-white py-2 px-4 rounded-md hover:bg-gray-600"
-                  >
-                    Start New Analysis
-                  </button>
-                )}
-              </div>
+              <ActionButtons
+                canGenerate={Boolean(file)}
+                isProcessing={isProcessing}
+                hasSolution={Boolean(solution)}
+                onGenerate={generateSolution}
+                onDownload={downloadSolution}
+                onReset={resetForm}
+              />
 
               {/* Error Display */}
               {error && (
@@ -222,8 +207,10 @@ const RFPSolutionGenerator = () => {
                   <span className={solution ? 'text-green-600' : 'text-gray-500'}>AI Analysis & Solution Generation</span>
                 </div>
                 <div className="flex items-center text-sm">
-                  <div className="w-6 h-6 rounded-full bg-gray-100 text-gray-400 flex items-center justify-center text-xs font-medium mr-3">3</div>
-                  <span className="text-gray-500">Download & Customize</span>
+                  <div className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-medium mr-3 ${
+                    downloaded ? 'bg-green-100 text-green-600' : 'bg-gray-100 text-gray-400'
+                  }`}>3</div>
+                  <span className={downloaded ? 'text-green-600' : 'text-gray-500'}>Download & Customize</span>
                 </div>
               </div>
             </div>
@@ -232,98 +219,19 @@ const RFPSolutionGenerator = () => {
           {/* Right Panel - Solution Preview */}
           <div className="lg:col-span-2">
             <div className="bg-white rounded-lg shadow-sm border border-gray-200">
-              <div className="p-6 border-b border-gray-200">
+              <div className="p-6 border-b border-gray-200 flex items-center justify-between">
                 <h2 className="text-lg font-semibold text-gray-900">Generated Solution Preview</h2>
-              </div>
-              
-              <div className="p-6">
-                {!solution ? (
-                  <div className="text-center py-12">
-                    <FileText className="h-24 w-24 text-gray-300 mx-auto mb-4" />
-                    <h3 className="text-lg font-medium text-gray-900 mb-2">No Solution Generated Yet</h3>
-                    <p className="text-gray-500">Upload an RFP document and click "Generate Solution" to see the preview here.</p>
-                  </div>
-                ) : (
-                  <div className="space-y-6">
-                    {/* Cover Page */}
-                    <div className="border border-dashed border-gray-300 rounded-lg p-6">
-                      <div className="flex flex-col items-center text-center">
-                        <img src="/api/logo" alt="Company Logo" className="h-20 w-auto mb-4" />
-                        <h1 className="text-2xl font-bold text-gray-900 mb-2">{solution.title}</h1>
-                        <p className="text-gray-600">{solution.date}</p>
-                      </div>
-                    </div>
-
-                    {/* Visual Page Break */}
-                    <div className="border-t border-gray-200 my-4"></div>
-
-                    {/* Problem Statement */}
-                    <div>
-                      <h2 className="text-xl font-semibold text-gray-900 mb-3">Problem Statement</h2>
-                      <div className="bg-blue-50 p-4 rounded-lg">
-                        <p className="text-gray-700">{solution.problem_statement}</p>
-                      </div>
-                    </div>
-
-                    {/* Key Challenges */}
-                    {solution.key_challenges && (
-                      <div>
-                        <h2 className="text-xl font-semibold text-gray-900 mb-3">Key Challenges</h2>
-                        <div className="space-y-2">
-                          {solution.key_challenges.map((challenge, index) => (
-                            <div key={index} className="flex items-start">
-                              <div className="w-2 h-2 bg-blue-600 rounded-full mt-2 mr-3 flex-shrink-0"></div>
-                              <p className="text-gray-700">{challenge}</p>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Solution Approach */}
-                    <div>
-                      <h2 className="text-xl font-semibold text-gray-900 mb-3">Our Solution Approach</h2>
-                      <div className="space-y-4">
-                        {solution.solution_approach && solution.solution_approach.map((step, index) => (
-                          <div key={index} className="border border-gray-200 rounded-lg p-4">
-                            <h3 className="font-semibold text-gray-900 mb-2">{step.title}</h3>
-                            <p className="text-gray-700">{step.description}</p>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-
-                    {/* Key Milestones */}
-                    {solution.milestones && (
-                      <div>
-                        <h2 className="text-xl font-semibold text-gray-900 mb-3">Key Milestones</h2>
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                          {solution.milestones.map((milestone, index) => (
-                            <div key={index} className="bg-gray-50 p-4 rounded-lg">
-                              <h4 className="font-semibold text-gray-900">{milestone.phase}</h4>
-                              <p className="text-sm text-gray-600">{milestone.duration}</p>
-                              <p className="text-sm text-gray-700 mt-1">{milestone.description}</p>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Technical Stack */}
-                    {solution.technical_stack && (
-                      <div>
-                        <h2 className="text-xl font-semibold text-gray-900 mb-3">Technical Stack</h2>
-                        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                          {solution.technical_stack.map((tech, index) => (
-                            <div key={index} className="bg-blue-100 text-blue-800 px-3 py-2 rounded-lg text-center text-sm font-medium">
-                              {tech}
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                  </div>
+                {solution && (
+                  <button
+                    onClick={() => setIsEditing(!isEditing)}
+                    className="text-sm bg-gray-800 text-white px-3 py-1 rounded-md hover:bg-gray-900"
+                  >
+                    {isEditing ? 'Save' : 'Edit'}
+                  </button>
                 )}
+              </div>
+              <div className="p-6">
+                <PreviewCard solution={solution} editable={isEditing} onChange={setSolution} />
               </div>
             </div>
           </div>
