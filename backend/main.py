@@ -16,19 +16,25 @@ from docx.oxml.shared import OxmlElement, qn
 
 app = FastAPI(title="RFP Solution Generator")
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins = ["http://localhost:3000"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"]
-)
-
 load_dotenv()
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 if not GROQ_API_KEY:
     raise ValueError("GROQ_API_KEY environment variable is required")
+
+# New: environment-driven configuration
+GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+ALLOWED_ORIGINS = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "http://localhost:3000").split(",") if o.strip()]
+MAX_FILE_SIZE_MB = int(os.getenv("MAX_FILE_SIZE_MB", "10"))
+MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins = ALLOWED_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"]
+)
 
 groq_client = Groq(api_key=GROQ_API_KEY)
 
@@ -36,7 +42,7 @@ class SolutionStep(BaseModel):
     title:str
     description:str
 
-class MileStone(BaseModel):
+class Milestone(BaseModel):
     phase:str
     duration:str
     description:str
@@ -47,7 +53,7 @@ class GeneratedSolution(BaseModel):
     problem_statement: str
     key_challenges: List[str]
     solution_approach: List[SolutionStep]
-    milestones: List[MileStone]
+    milestones: List[Milestone]
     technical_stack: List[str]
     objectives: List[str]
     acceptance_criteria: List[str]
@@ -76,11 +82,7 @@ def extract_text_from_docx(file_path: str) -> str:
         raise HTTPException(status_code=400, detail=f"Error reading Word document: {str(e)}")
     return text
 
-def extract_text_from_doc(file_path: str) -> str:
-    """Extract text from old Word document (.doc)"""
-    # For .doc files, you might need python-docx2txt or other libraries
-    # For now, we'll return an error message
-    raise HTTPException(status_code=400, detail="Legacy .doc format not supported. Please convert to .docx")
+# Legacy .doc is intentionally not supported per requirements
 
 def _get_logo_path() -> str:
     """Resolve absolute path to AIONOS_logo.png at project root."""
@@ -88,6 +90,47 @@ def _get_logo_path() -> str:
     project_root = os.path.dirname(backend_dir)
     logo_path = os.path.join(project_root, 'AIONOS_logo.png')
     return logo_path
+
+# Utility: add Page X of Y footer using field codes
+
+def _add_page_number_footer(doc: Document) -> None:
+    section = doc.sections[0]
+    footer = section.footer
+    paragraph = footer.paragraphs[0] if footer.paragraphs else footer.add_paragraph()
+    paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+    # Helper to append a field
+    def _add_field(run, fld_char_type):
+        fld = OxmlElement('w:fldChar')
+        fld.set(qn('w:fldCharType'), fld_char_type)
+        run._r.append(fld)
+
+    # Build: "Page " + PAGE + " of " + NUMPAGES
+    r1 = paragraph.add_run("Page ")
+
+    r_page_begin = paragraph.add_run()
+    _add_field(r_page_begin, 'begin')
+    instr_page = OxmlElement('w:instrText')
+    instr_page.set(qn('xml:space'), 'preserve')
+    instr_page.text = ' PAGE '
+    r_page_begin._r.append(instr_page)
+    r_page_sep = paragraph.add_run()
+    _add_field(r_page_sep, 'separate')
+    r_page_text = paragraph.add_run()
+    _add_field(r_page_text, 'end')
+
+    r2 = paragraph.add_run(" of ")
+
+    r_nump_begin = paragraph.add_run()
+    _add_field(r_nump_begin, 'begin')
+    instr_nump = OxmlElement('w:instrText')
+    instr_nump.set(qn('xml:space'), 'preserve')
+    instr_nump.text = ' NUMPAGES '
+    r_nump_begin._r.append(instr_nump)
+    r_nump_sep = paragraph.add_run()
+    _add_field(r_nump_sep, 'separate')
+    r_nump_text = paragraph.add_run()
+    _add_field(r_nump_text, 'end')
 
 # LLM Processing
 async def analyze_rfp_with_groq(rfp_text: str) -> GeneratedSolution:
@@ -98,63 +141,65 @@ async def analyze_rfp_with_groq(rfp_text: str) -> GeneratedSolution:
     
     Based on the following RFP document, generate a comprehensive technical proposal that follows this structure:
     
-    1. **Title**: Create a descriptive title for the solution
-    2. **Problem Statement**: Summarize the core problem from the RFP
-    3. **Key Challenges**: Identify 3-5 main technical/business challenges
-    4. **Solution Approach**: Break down into 4-6 detailed steps with titles and descriptions
-    5. **Milestones**: Create 5-8 project phases with duration and description
-    6. **Technical Stack**: List relevant technologies, frameworks, and tools
-    7. **Objectives**: List key project objectives
-    8. **Acceptance Criteria**: Define measurable success criteria
+    1. Title
+    2. Problem Statement
+    3. Key Challenges (3-5 items)
+    4. Solution Approach (4-6 steps with title and description for each)
+    5. Milestones (5-8 phases with duration and description)
+    6. Technical Stack
+    7. Objectives
+    8. Acceptance Criteria
     
-    Make the response professional, technical, and similar in style to enterprise consulting proposals.
+    Respond ONLY with a single fenced JSON block using triple backticks and the json language tag. No prose before or after.
     
     RFP Content:
-    {rfp_text[:8000]}  # Limit text to avoid token limits
+    {rfp_text[:8000]}
     
-    Please respond in JSON format with the following structure:
+    The JSON structure must be exactly:
     {{
         "title": "Solution title",
         "date": "{datetime.now().strftime('%B %Y')}",
         "problem_statement": "Problem description",
-        "key_challenges": ["challenge1", "challenge2", ...],
+        "key_challenges": ["challenge1", "challenge2"],
         "solution_approach": [
-            {{"title": "Step 1: Title", "description": "Detailed description"}},
-            ...
+            {{"title": "Step 1: Title", "description": "Detailed description"}}
         ],
         "milestones": [
-            {{"phase": "Phase Name", "duration": "X weeks", "description": "Phase description"}},
-            ...
+            {{"phase": "Phase Name", "duration": "X weeks", "description": "Phase description"}}
         ],
-        "technical_stack": ["Technology1", "Technology2", ...],
-        "objectives": ["Objective1", "Objective2", ...],
-        "acceptance_criteria": ["Criteria1", "Criteria2", ...]
+        "technical_stack": ["Technology1", "Technology2"],
+        "objectives": ["Objective1", "Objective2"],
+        "acceptance_criteria": ["Criteria1", "Criteria2"]
     }}
     """
     
     try:
         response = groq_client.chat.completions.create(
-            model="llama-3.3-70b-versatile",  # Using Llama 3 model
+            model=GROQ_MODEL,
             messages=[
-                {"role": "system", "content": "You are a technical proposal expert. Always respond with valid JSON."},
+                {"role": "system", "content": "You are a technical proposal expert. Always respond with valid JSON inside a fenced ```json block."},
                 {"role": "user", "content": prompt}
             ],
             temperature=0.3,
             max_tokens=4000
         )
         
-        response_text = response.choices[0].message.content
+        response_text = response.choices[0].message.content or ""
         
-        # Try to extract JSON from response
-        json_start = response_text.find('{')
-        json_end = response_text.rfind('}') + 1
+        # Robust fenced JSON extraction
+        json_start = response_text.find("```json")
+        json_end = response_text.rfind("```")
+        if json_start != -1 and json_end != -1 and json_end > json_start:
+            json_str = response_text[json_start + len("```json"):json_end].strip()
+        else:
+            # Fallback: try to slice from first { to last }
+            brace_start = response_text.find('{')
+            brace_end = response_text.rfind('}')
+            if brace_start == -1 or brace_end == -1:
+                raise ValueError("No JSON found in response")
+            json_str = response_text[brace_start:brace_end+1]
         
-        if json_start == -1 or json_end == 0:
-            raise ValueError("No JSON found in response")
-        
-        json_str = response_text[json_start:json_end]
         solution_data = json.loads(json_str)
-        
         return GeneratedSolution(**solution_data)
         
     except Exception as e:
@@ -218,6 +263,12 @@ async def analyze_rfp_with_groq(rfp_text: str) -> GeneratedSolution:
 def create_word_document(solution: GeneratedSolution) -> str:
     """Create a Word document from the generated solution"""
     doc = Document()
+
+    # Add page numbers in footer: Page X of Y
+    try:
+        _add_page_number_footer(doc)
+    except Exception:
+        pass
 
     # Add company logo centered on the first page if available
     logo_path = _get_logo_path()
@@ -330,19 +381,32 @@ def create_word_document(solution: GeneratedSolution) -> str:
 async def generate_solution(file: UploadFile = File(...)):
     """Generate solution from uploaded RFP document"""
     
-    # Validate file type
+    # Validate file type (PDF and DOCX only)
     allowed_types = ['application/pdf', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document']
     if file.content_type not in allowed_types:
-        raise HTTPException(status_code=400, detail="Only PDF and DOCX files are supported")
+        raise HTTPException(status_code=400, detail=f"Unsupported file type: {file.content_type}. Only PDF and DOCX are supported.")
     
     # Create temporary file
     temp_dir = tempfile.gettempdir()
     temp_file_path = os.path.join(temp_dir, file.filename)
     
     try:
-        # Save uploaded file
+        # Save uploaded file while enforcing size limit
         with open(temp_file_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
+            total_written = 0
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                total_written += len(chunk)
+                if total_written > MAX_FILE_SIZE_BYTES:
+                    raise HTTPException(status_code=400, detail=f"File too large. Max size is {MAX_FILE_SIZE_MB}MB.")
+                buffer.write(chunk)
+        await file.close()
+
+        # Double-check file size on disk
+        if os.path.getsize(temp_file_path) == 0:
+            raise HTTPException(status_code=400, detail="Uploaded file is empty.")
         
         # Extract text based on file type
         if file.content_type == 'application/pdf':
@@ -350,7 +414,7 @@ async def generate_solution(file: UploadFile = File(...)):
         elif file.content_type == 'application/vnd.openxmlformats-officedocument.wordprocessingml.document':
             rfp_text = extract_text_from_docx(temp_file_path)
         else:
-            raise HTTPException(status_code=400, detail="Unsupported file format")
+            raise HTTPException(status_code=400, detail=f"Unsupported file type: {file.content_type}")
         
         if not rfp_text.strip():
             raise HTTPException(status_code=400, detail="No text content found in the document")
@@ -360,12 +424,17 @@ async def generate_solution(file: UploadFile = File(...)):
         
         return solution
         
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error processing document: {str(e)}")
     finally:
         # Cleanup temporary file
         if os.path.exists(temp_file_path):
-            os.remove(temp_file_path)
+            try:
+                os.remove(temp_file_path)
+            except Exception:
+                pass
 
 @app.post("/api/download-solution")
 async def download_solution(solution: GeneratedSolution):
