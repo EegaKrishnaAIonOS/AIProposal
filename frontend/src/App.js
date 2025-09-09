@@ -11,6 +11,7 @@ const RFPSolutionGenerator = () => {
   const [error, setError] = useState(null);
   const [downloaded, setDownloaded] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
+  const [inputText, setInputText] = useState('');
 
   const onFileSelected = (f) => {
     setFile(f);
@@ -19,29 +20,38 @@ const RFPSolutionGenerator = () => {
   };
 
   const generateSolution = async () => {
-    if (!file){
-      setError('Please upload the RFP document first');
+    if (!file && !inputText.trim()){
+      setError('Please upload a document or enter a problem statement');
       return;
     }
     setIsProcessing(true);
     setError(null);
     setDownloaded(false);
     try {
-      const formData = new FormData();
-      formData.append('file', file);
-
-      const response = await fetch('/api/generate-solution', {
-        method: 'POST',
-        body: formData,
-      });
-
-      if (!response.ok) {
-        let msg = 'Failed to generate solution';
-        try { const j = await response.json(); if (j?.detail) msg = j.detail; } catch {}
-        throw new Error(msg);
+      let data;
+      if (file) {
+        const formData = new FormData();
+        formData.append('file', file);
+        const response = await fetch('/api/generate-solution', { method: 'POST', body: formData });
+        if (!response.ok) {
+          let msg = 'Failed to generate solution';
+          try { const j = await response.json(); if (j?.detail) msg = j.detail; } catch {}
+          throw new Error(msg);
+        }
+        data = await response.json();
+      } else {
+        const response = await fetch('/api/generate-solution-text', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text: inputText.trim() })
+        });
+        if (!response.ok) {
+          let msg = 'Failed to generate solution';
+          try { const j = await response.json(); if (j?.detail) msg = j.detail; } catch {}
+          throw new Error(msg);
+        }
+        data = await response.json();
       }
-
-      const data = await response.json();
       setSolution(data);
       setIsEditing(false);
     } catch (err) {
@@ -90,6 +100,7 @@ const RFPSolutionGenerator = () => {
     setError(null);
     setDownloaded(false);
     setIsEditing(false);
+    setInputText('');
   };
 
   const scrollToUpload = () => {
@@ -159,9 +170,29 @@ const RFPSolutionGenerator = () => {
           {/* Left Panel - Upload & Controls */}
           <div className="lg:col-span-1" id="upload-section">
             <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-              <h2 className="text-lg font-semibold text-gray-900 mb-4">Document Upload</h2>
+              <h2 className="text-lg font-semibold text-gray-900 mb-4">Provide Input</h2>
 
               <FileUploader onFileSelected={onFileSelected} error={error} onError={setError} />
+
+              {/* OR divider */}
+              <div className="my-4 flex items-center">
+                <div className="flex-1 h-px bg-gray-200"/>
+                <span className="px-3 text-xs text-gray-500">OR</span>
+                <div className="flex-1 h-px bg-gray-200"/>
+              </div>
+
+              {/* Textarea alternative */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">Problem Statement / Use Case</label>
+                <textarea
+                  className="w-full border rounded-md p-3 text-sm focus:outline-none focus:ring"
+                  rows={5}
+                  placeholder="Describe the problem, goals, constraints, and any context..."
+                  value={inputText}
+                  onChange={(e) => setInputText(e.target.value)}
+                />
+                <p className="mt-1 text-xs text-gray-500">Either upload a document above or enter text here.</p>
+              </div>
 
               {isProcessing && (
                 <div className="mb-4">
@@ -173,7 +204,7 @@ const RFPSolutionGenerator = () => {
               )}
 
               <ActionButtons
-                canGenerate={Boolean(file)}
+                canGenerate={Boolean(file) || Boolean(inputText.trim())}
                 isProcessing={isProcessing}
                 hasSolution={Boolean(solution)}
                 onGenerate={generateSolution}

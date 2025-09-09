@@ -71,6 +71,9 @@ class GeneratedSolution(BaseModel):
     resources: List[ResourceItem]
     cost_analysis: List[CostItem]
 
+class GenerateTextBody(BaseModel):
+    text: str
+
 # Document extraction functions
 def extract_text_from_pdf(file_path: str) -> str:
     """Extract text from PDF file"""
@@ -564,6 +567,18 @@ async def generate_solution(file: UploadFile = File(...)):
                 os.remove(temp_file_path)
             except Exception:
                 pass
+
+@app.post("/api/generate-solution-text", response_model=GeneratedSolution)
+async def generate_solution_text(body: GenerateTextBody):
+    """Generate solution directly from a raw problem statement / use case text."""
+    rfp_text = (body.text or "").strip()
+    if not rfp_text:
+        raise HTTPException(status_code=400, detail="Text is required")
+    try:
+        solution = await analyze_rfp_with_groq(rfp_text)
+        return solution
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error generating from text: {str(e)}")
 
 @app.post("/api/download-solution")
 async def download_solution(solution: GeneratedSolution):
