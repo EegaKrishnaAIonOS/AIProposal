@@ -80,6 +80,32 @@ export default function PreviewCard({ solution, editable = false, onChange }) {
     updateField('milestones', arr);
   };
 
+  // New: Resources helpers
+  const updateResource = (index, patch) => {
+    const arr = [...(solution.resources || [])];
+    arr[index] = { ...arr[index], ...patch };
+    updateField('resources', arr);
+  };
+  const addResource = () => addListItem('resources', { role: 'New Role', count: 1, years_of_experience: 3, responsibilities: '' });
+  const removeResource = (index) => {
+    const arr = [...(solution.resources || [])];
+    arr.splice(index, 1);
+    updateField('resources', arr);
+  };
+
+  // New: Cost Analysis helpers
+  const updateCost = (index, patch) => {
+    const arr = [...(solution.cost_analysis || [])];
+    arr[index] = { ...arr[index], ...patch };
+    updateField('cost_analysis', arr);
+  };
+  const addCost = () => addListItem('cost_analysis', { item: 'New Item', cost: '₹0', notes: '' });
+  const removeCost = (index) => {
+    const arr = [...(solution.cost_analysis || [])];
+    arr.splice(index, 1);
+    updateField('cost_analysis', arr);
+  };
+
   return (
     <div className="space-y-6">
       <div className="border border-dashed border-gray-300 rounded-lg p-6">
@@ -312,6 +338,95 @@ export default function PreviewCard({ solution, editable = false, onChange }) {
             <ul className="list-disc pl-6 text-gray-700">
               {solution.acceptance_criteria.map((c, i) => <li key={i} className="mb-1">{c}</li>)}
             </ul>
+          )}
+        </Section>
+      )}
+
+      {solution.resources?.length > 0 && (
+        <Section title="Resources">
+          {editable ? (
+            <div className="space-y-3">
+              {solution.resources.map((r, i) => (
+                <div key={i} className="grid grid-cols-1 md:grid-cols-12 gap-2 items-start">
+                  <input className="md:col-span-3 border rounded px-3 py-2 text-sm" value={r.role} onChange={e => updateResource(i, { role: e.target.value })} />
+                  <input className="md:col-span-2 border rounded px-3 py-2 text-sm" type="number" min={0} value={r.count} onChange={e => updateResource(i, { count: Number(e.target.value) })} />
+                  <input className="md:col-span-2 border rounded px-3 py-2 text-sm" type="number" min={0} value={r.years_of_experience || 0} onChange={e => updateResource(i, { years_of_experience: Number(e.target.value) })} />
+                  <textarea className="md:col-span-4 border rounded px-3 py-2 text-sm" rows={2} value={r.responsibilities || ''} onChange={e => updateResource(i, { responsibilities: e.target.value })} />
+                  <button onClick={() => removeResource(i)} className="md:col-span-1 p-2 text-red-600 hover:bg-red-50 rounded">
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+              ))}
+              <button onClick={addResource} className="text-blue-600 text-sm inline-flex items-center">
+                <Plus className="h-4 w-4 mr-1"/> Add resource
+              </button>
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="min-w-full text-left border border-gray-200 rounded-lg overflow-hidden">
+                <thead className="bg-gray-50">
+                  <tr>
+                    <th className="px-4 py-2 text-sm font-semibold text-gray-700 border-b">Role</th>
+                    <th className="px-4 py-2 text-sm font-semibold text-gray-700 border-b">Count</th>
+                    <th className="px-4 py-2 text-sm font-semibold text-gray-700 border-b">Years of Experience</th>
+                    <th className="px-4 py-2 text-sm font-semibold text-gray-700 border-b">Responsibilities</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {solution.resources.map((r, i) => (
+                    <tr key={i} className="odd:bg-white even:bg-gray-50">
+                      <td className="px-4 py-2 border-b align-top">{r.role}</td>
+                      <td className="px-4 py-2 border-b align-top">{r.count}</td>
+                      <td className="px-4 py-2 border-b align-top">{r.years_of_experience}</td>
+                      <td className="px-4 py-2 border-b align-top">{r.responsibilities}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </Section>
+      )}
+
+      {solution.cost_analysis?.length > 0 && (
+        <Section title="Cost Analysis">
+          {editable ? (
+            <div className="space-y-3">
+              {solution.cost_analysis.map((c, i) => (
+                <div key={i} className="grid grid-cols-1 md:grid-cols-12 gap-2 items-start">
+                  <input className="md:col-span-5 border rounded px-3 py-2 text-sm" value={c.item} onChange={e => updateCost(i, { item: e.target.value })} />
+                  <input className="md:col-span-2 border rounded px-3 py-2 text-sm" value={c.cost} onChange={e => updateCost(i, { cost: e.target.value })} />
+                  <textarea className="md:col-span-4 border rounded px-3 py-2 text-sm" rows={2} value={c.notes || ''} onChange={e => updateCost(i, { notes: e.target.value })} />
+                  <button onClick={() => removeCost(i)} className="md:col-span-1 p-2 text-red-600 hover:bg-red-50 rounded">
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+              ))}
+              <button onClick={addCost} className="text-blue-600 text-sm inline-flex items-center">
+                <Plus className="h-4 w-4 mr-1"/> Add cost item
+              </button>
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="min-w-full text-left border border-gray-200 rounded-lg overflow-hidden">
+                <thead className="bg-gray-50">
+                  <tr>
+                    <th className="px-4 py-2 text-sm font-semibold text-gray-700 border-b">Item</th>
+                    <th className="px-4 py-2 text-sm font-semibold text-gray-700 border-b">Cost (INR)</th>
+                    <th className="px-4 py-2 text-sm font-semibold text-gray-700 border-b">Notes</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {solution.cost_analysis.map((c, i) => (
+                    <tr key={i} className="odd:bg-white even:bg-gray-50">
+                      <td className="px-4 py-2 border-b align-top">{c.item}</td>
+                      <td className="px-4 py-2 border-b align-top">{c.cost}</td>
+                      <td className="px-4 py-2 border-b align-top">{c.notes}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           )}
         </Section>
       )}
