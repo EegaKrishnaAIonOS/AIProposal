@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 import PyPDF2
 from docx import Document
 from docx.shared import Inches, Pt
-from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_TAB_ALIGNMENT, WD_TAB_LEADER
 from docx.oxml.shared import OxmlElement, qn
 
 app = FastAPI(title="RFP Solution Generator")
@@ -47,6 +47,17 @@ class Milestone(BaseModel):
     duration:str
     description:str
 
+class ResourceItem(BaseModel):
+    role: str
+    count: int
+    years_of_experience: Optional[int] = None
+    responsibilities: Optional[str] = None
+
+class CostItem(BaseModel):
+    item: str
+    cost: str
+    notes: Optional[str] = None
+
 class GeneratedSolution(BaseModel):
     title: str
     date: str
@@ -57,6 +68,8 @@ class GeneratedSolution(BaseModel):
     technical_stack: List[str]
     objectives: List[str]
     acceptance_criteria: List[str]
+    resources: List[ResourceItem]
+    cost_analysis: List[CostItem]
 
 # Document extraction functions
 def extract_text_from_pdf(file_path: str) -> str:
@@ -132,6 +145,81 @@ def _add_page_number_footer(doc: Document) -> None:
     r_nump_text = paragraph.add_run()
     _add_field(r_nump_text, 'end')
 
+# Utility: add a bookmark to a heading paragraph and add PAGEREF fields
+
+def _add_bookmark(paragraph, name: str, bm_id: int) -> int:
+    start = OxmlElement('w:bookmarkStart')
+    start.set(qn('w:id'), str(bm_id))
+    start.set(qn('w:name'), name)
+    end = OxmlElement('w:bookmarkEnd')
+    end.set(qn('w:id'), str(bm_id))
+    paragraph._p.insert(0, start)
+    paragraph._p.append(end)
+    return bm_id + 1
+
+
+def _add_pageref_to_cell(cell, bookmark_name: str) -> None:
+    p = cell.paragraphs[0] if cell.paragraphs else cell.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+    def _add_field(run, fld_char_type):
+        fld = OxmlElement('w:fldChar')
+        fld.set(qn('w:fldCharType'), fld_char_type)
+        run._r.append(fld)
+    r_begin = p.add_run()
+    _add_field(r_begin, 'begin')
+    instr = OxmlElement('w:instrText')
+    instr.set(qn('xml:space'), 'preserve')
+    instr.text = f' PAGEREF {bookmark_name} '
+    r_begin._r.append(instr)
+    r_sep = p.add_run()
+    _add_field(r_sep, 'separate')
+    r_end = p.add_run()
+    _add_field(r_end, 'end')
+
+# Utility: add a leadered index line: "NN Title ......... <PAGEREF>"
+# (kept for reference but not used — we now insert a TOC field)
+
+def _add_index_line(doc: Document, number_str: str, title: str, bookmark_name: str) -> None:
+    p = doc.add_paragraph()
+    p.style = doc.styles['Normal']
+    tabstops = p.paragraph_format.tab_stops
+    tabstops.add_tab_stop(Inches(6.0), alignment=WD_TAB_ALIGNMENT.RIGHT, leader=WD_TAB_LEADER.DOTS)
+    run_left = p.add_run(f"{number_str} {title}\t")
+    def _add_field(run, fld_char_type):
+        fld = OxmlElement('w:fldChar')
+        fld.set(qn('w:fldCharType'), fld_char_type)
+        run._r.append(fld)
+    r_begin = p.add_run()
+    _add_field(r_begin, 'begin')
+    instr = OxmlElement('w:instrText')
+    instr.set(qn('xml:space'), 'preserve')
+    instr.text = f' PAGEREF {bookmark_name} '
+    r_begin._r.append(instr)
+    r_sep = p.add_run()
+    _add_field(r_sep, 'separate')
+    r_end = p.add_run()
+    _add_field(r_end, 'end')
+
+# Insert a Table of Contents field (Heading levels 1 only)
+
+def _insert_toc(doc: Document) -> None:
+    p = doc.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.LEFT
+    # Create field characters within runs (valid WordprocessingML)
+    def fld_char(char_type: str):
+        el = OxmlElement('w:fldChar')
+        el.set(qn('w:fldCharType'), char_type)
+        return el
+    def instr_text(text: str):
+        el = OxmlElement('w:instrText')
+        el.set(qn('xml:space'), 'preserve')
+        el.text = text
+        return el
+    r1 = p.add_run(); r1._r.append(fld_char('begin'))
+    r2 = p.add_run(); r2._r.append(instr_text(' TOC \\o "1-1" \\h \\z \\u '))
+    r3 = p.add_run(); r3._r.append(fld_char('separate'))
+    r4 = p.add_run(); r4._r.append(fld_char('end'))
+
 # LLM Processing
 async def analyze_rfp_with_groq(rfp_text: str) -> GeneratedSolution:
     """Analyze RFP text using Groq and generate solution"""
@@ -149,6 +237,8 @@ async def analyze_rfp_with_groq(rfp_text: str) -> GeneratedSolution:
     6. Technical Stack
     7. Objectives
     8. Acceptance Criteria
+    9. Resources (list of roles with counts, years_of_experience, responsibilities)
+    10. Cost Analysis (INR currency; list of cost items with cost and optional notes)
     
     Respond ONLY with a single fenced JSON block using triple backticks and the json language tag. No prose before or after.
     
@@ -169,7 +259,13 @@ async def analyze_rfp_with_groq(rfp_text: str) -> GeneratedSolution:
         ],
         "technical_stack": ["Technology1", "Technology2"],
         "objectives": ["Objective1", "Objective2"],
-        "acceptance_criteria": ["Criteria1", "Criteria2"]
+        "acceptance_criteria": ["Criteria1", "Criteria2"],
+        "resources": [
+            {{"role": "Role Name", "count": 3, "years_of_experience": 5, "responsibilities": "Key responsibilities"}}
+        ],
+        "cost_analysis": [
+            {{"item": "Item name", "cost": "₹750,000", "notes": "Optional note"}}
+        ]
     }}
     """
     
@@ -204,7 +300,7 @@ async def analyze_rfp_with_groq(rfp_text: str) -> GeneratedSolution:
         
     except Exception as e:
         print(f"Error with Groq API: {str(e)}")
-        # Fallback solution
+        # Fallback solution (INR costs; includes years_of_experience)
         return GeneratedSolution(
             title="Technical Solution Proposal",
             date=datetime.now().strftime('%B %Y'),
@@ -257,6 +353,18 @@ async def analyze_rfp_with_groq(rfp_text: str) -> GeneratedSolution:
                 "Performance benchmarks achieved",
                 "Security compliance verified",
                 "User acceptance testing completed successfully"
+            ],
+            resources=[
+                {"role": "Project Manager", "count": 1, "years_of_experience": 10, "responsibilities": "Project governance and stakeholder communication"},
+                {"role": "Solution Architect", "count": 1, "years_of_experience": 8, "responsibilities": "Architecture and design oversight"},
+                {"role": "Backend Engineer", "count": 2, "years_of_experience": 5, "responsibilities": "API and data layer development"},
+                {"role": "Frontend Engineer", "count": 2, "years_of_experience": 4, "responsibilities": "UI implementation and integrations"}
+            ],
+            cost_analysis=[
+                {"item": "Discovery & Design", "cost": "₹650,000", "notes": "Requirements and architecture"},
+                {"item": "Implementation", "cost": "₹2,900,000", "notes": "Core features and integrations"},
+                {"item": "Testing & QA", "cost": "₹580,000", "notes": "Automated and UAT"},
+                {"item": "Deployment & Training", "cost": "₹420,000", "notes": "Go-live and enablement"}
             ]
         )
 # Document generation functions
@@ -264,116 +372,137 @@ def create_word_document(solution: GeneratedSolution) -> str:
     """Create a Word document from the generated solution"""
     doc = Document()
 
+    # Make fields update on open
+    try:
+        settings = doc.settings
+        update_fields = OxmlElement('w:updateFields')
+        update_fields.set(qn('w:val'), 'true')
+        settings.element.append(update_fields)
+    except Exception:
+        pass
+
     # Add page numbers in footer: Page X of Y
     try:
         _add_page_number_footer(doc)
     except Exception:
         pass
 
-    # Add company logo centered on the first page if available
+    # Cover
     logo_path = _get_logo_path()
     if os.path.exists(logo_path):
         try:
             picture = doc.add_picture(logo_path, width=Inches(2.5))
-            # Center align the paragraph that contains the picture
             last_paragraph = doc.paragraphs[-1]
             last_paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
         except Exception:
-            # If image insertion fails, continue without blocking document creation
             pass
-
-    # Set document title
     title = doc.add_heading(solution.title, 0)
     title.alignment = WD_ALIGN_PARAGRAPH.CENTER
-
-    # Add date
     date_p = doc.add_paragraph(solution.date)
     date_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
 
-    # Page break to start content from second page
+    # Contents (Word TOC)
     doc.add_page_break()
-
-    # Table of Contents placeholder
     doc.add_heading('Contents', level=1)
-    toc_items = [
-        '01 Problem Statement',
-        '02 Key Challenges', 
-        '03 Our Solution Approach',
-        '04 Technical Implementation',
-        '05 Project Milestones',
-        '06 Technical Stack',
-        '07 Objectives & Success Criteria'
-    ]
-    
-    for i, item in enumerate(toc_items, 1):
-        p = doc.add_paragraph()
-        p.add_run(f'{i:02d} ').bold = True
-        p.add_run(item[3:])  # Remove the number prefix
-    
+    _insert_toc(doc)
+
+    # Content sections
     doc.add_page_break()
-    
-    # Problem Statement
-    doc.add_heading('Problem Statement', level=1)
+    bookmark_id = 1
+
+    h = doc.add_heading('Problem Statement', level=1)
+    bookmark_id = _add_bookmark(h, 'sec_problem_statement', bookmark_id)
     doc.add_paragraph(solution.problem_statement)
-    
-    # Key Challenges
-    doc.add_heading('Key Challenges', level=1)
+
+    h = doc.add_heading('Key Challenges', level=1)
+    bookmark_id = _add_bookmark(h, 'sec_key_challenges', bookmark_id)
     for challenge in solution.key_challenges:
         p = doc.add_paragraph(style='List Bullet')
         p.add_run(challenge)
-    
-    # Solution Approach
-    doc.add_heading('Our Solution Approach', level=1)
+
+    h = doc.add_heading('Our Solution Approach', level=1)
+    bookmark_id = _add_bookmark(h, 'sec_solution_approach', bookmark_id)
     for i, step in enumerate(solution.solution_approach, 1):
         doc.add_heading(f'{step.title}', level=2)
         doc.add_paragraph(step.description)
-    
-    # Technical Stack
-    doc.add_heading('Technical Stack', level=1)
+
+    h = doc.add_heading('Technical Stack', level=1)
+    bookmark_id = _add_bookmark(h, 'sec_technical_stack', bookmark_id)
     for tech in solution.technical_stack:
         p = doc.add_paragraph(style='List Bullet')
         p.add_run(tech)
-    
-    # Milestones
-    doc.add_heading('Key Milestones', level=1)
-    
-    # Create table for milestones
+
+    h = doc.add_heading('Key Milestones', level=1)
+    bookmark_id = _add_bookmark(h, 'sec_key_milestones', bookmark_id)
     table = doc.add_table(rows=1, cols=3)
     table.style = 'Table Grid'
     hdr_cells = table.rows[0].cells
     hdr_cells[0].text = 'Phase'
     hdr_cells[1].text = 'Duration'
     hdr_cells[2].text = 'Description'
-    
-    # Make header row bold
     for cell in hdr_cells:
         for paragraph in cell.paragraphs:
             for run in paragraph.runs:
                 run.font.bold = True
-    
     for milestone in solution.milestones:
         row_cells = table.add_row().cells
         row_cells[0].text = milestone.phase
         row_cells[1].text = milestone.duration
         row_cells[2].text = milestone.description
-    
-    # Objectives
-    doc.add_heading('Objectives', level=1)
+
+    h = doc.add_heading('Objectives', level=1)
+    bookmark_id = _add_bookmark(h, 'sec_objectives', bookmark_id)
     for objective in solution.objectives:
         p = doc.add_paragraph(style='List Bullet')
         p.add_run(objective)
-    
-    # Acceptance Criteria
-    doc.add_heading('Acceptance Criteria', level=1)
+
+    h = doc.add_heading('Acceptance Criteria', level=1)
+    bookmark_id = _add_bookmark(h, 'sec_acceptance_criteria', bookmark_id)
     for criteria in solution.acceptance_criteria:
         p = doc.add_paragraph(style='List Bullet')
         p.add_run(criteria)
-    
-    # Save document
+
+    h = doc.add_heading('Resources', level=1)
+    bookmark_id = _add_bookmark(h, 'sec_resources', bookmark_id)
+    r_table = doc.add_table(rows=1, cols=4)
+    r_table.style = 'Table Grid'
+    r_hdr = r_table.rows[0].cells
+    r_hdr[0].text = 'Role'
+    r_hdr[1].text = 'Count'
+    r_hdr[2].text = 'Years of Experience'
+    r_hdr[3].text = 'Responsibilities'
+    for cell in r_hdr:
+        for paragraph in cell.paragraphs:
+            for run in paragraph.runs:
+                run.font.bold = True
+    for res in solution.resources:
+        row = r_table.add_row().cells
+        row[0].text = res.role
+        row[1].text = str(res.count)
+        row[2].text = str(res.years_of_experience or '')
+        row[3].text = res.responsibilities or ""
+
+    h = doc.add_heading('Cost Analysis', level=1)
+    bookmark_id = _add_bookmark(h, 'sec_cost_analysis', bookmark_id)
+    c_table = doc.add_table(rows=1, cols=3)
+    c_table.style = 'Table Grid'
+    c_hdr = c_table.rows[0].cells
+    c_hdr[0].text = 'Item'
+    c_hdr[1].text = 'Cost (INR)'
+    c_hdr[2].text = 'Notes'
+    for cell in c_hdr:
+        for paragraph in cell.paragraphs:
+            for run in paragraph.runs:
+                run.font.bold = True
+    for ci in solution.cost_analysis:
+        row = c_table.add_row().cells
+        row[0].text = ci.item
+        row[1].text = ci.cost
+        row[2].text = ci.notes or ""
+
     temp_dir = tempfile.gettempdir()
     doc_path = os.path.join(temp_dir, f'technical_proposal_{datetime.now().strftime("%Y%m%d_%H%M%S")}.docx')
     doc.save(doc_path)
-    
     return doc_path
 
 # API Endpoints
