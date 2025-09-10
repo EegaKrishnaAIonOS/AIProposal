@@ -223,6 +223,24 @@ export default function PreviewCard({ solution, editable = false, onChange }) {
         </Section>
       )}
 
+      {solution.architecture_diagram && (
+        <Section title="Architecture Diagram">
+          <div className="border border-gray-200 rounded-lg p-4">
+            {editable ? (
+              <textarea
+                className="w-full text-gray-700 border rounded px-3 py-2"
+                rows={5}
+                value={solution.architecture_diagram}
+                onChange={e => updateField('architecture_diagram', e.target.value)}
+              />
+            ) : (
+              // <p className="text-gray-700 whitespace-pre-wrap">{solution.architecture_diagram}</p>
+              <img src={solution.architecture_diagram_image} alt="Architecture Diagram" className="max-w-full h-auto"/>
+            )}
+          </div>
+        </Section>
+      )}
+
       {solution.milestones?.length > 0 && (
         <Section title="Key Milestones">
           {editable ? (

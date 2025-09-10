@@ -13,6 +13,7 @@ from docx import Document
 from docx.shared import Inches, Pt
 from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_TAB_ALIGNMENT, WD_TAB_LEADER
 from docx.oxml.shared import OxmlElement, qn
+import requests,base64
 
 app = FastAPI(title="RFP Solution Generator")
 
@@ -64,6 +65,8 @@ class GeneratedSolution(BaseModel):
     problem_statement: str
     key_challenges: List[str]
     solution_approach: List[SolutionStep]
+    architecture_diagram: Optional[str] = None
+    architecture_diagram_image: Optional[str] = None
     milestones: List[Milestone]
     technical_stack: List[str]
     objectives: List[str]
@@ -223,6 +226,28 @@ def _insert_toc(doc: Document) -> None:
     r3 = p.add_run(); r3._r.append(fld_char('separate'))
     r4 = p.add_run(); r4._r.append(fld_char('end'))
 
+def render_mermaid_to_image(mermaid_code: str) -> str:
+    """Render Mermaid code to a temporary PNG file using Kroki API."""
+    if not mermaid_code:
+        raise ValueError("No Mermaid code provided")
+    
+    payload = {
+        "diagram_source": mermaid_code,
+        "diagram_type": "mermaid",
+        "output_format": "png"
+    }
+    
+    response = requests.post("https://kroki.io", json=payload)
+    if response.status_code != 200:
+        raise Exception(f"Kroki API error: {response.text}")
+    
+    temp_dir = tempfile.gettempdir()
+    image_path = os.path.join(temp_dir, f'architecture_diagram_{datetime.now().strftime("%Y%m%d_%H%M%S")}.png')
+    with open(image_path, "wb") as f:
+        f.write(response.content)
+    
+    return image_path
+
 # LLM Processing
 async def analyze_rfp_with_groq(rfp_text: str) -> GeneratedSolution:
     """Analyze RFP text using Groq and generate solution"""
@@ -236,12 +261,13 @@ async def analyze_rfp_with_groq(rfp_text: str) -> GeneratedSolution:
     2. Problem Statement
     3. Key Challenges (3-5 items)
     4. Solution Approach (4-6 steps with title and description for each)
-    5. Milestones (5-8 phases with duration and description)
-    6. Technical Stack
-    7. Objectives
-    8. Acceptance Criteria
-    9. Resources (list of roles with counts, years_of_experience, responsibilities)
-    10. Cost Analysis (INR currency; list of cost items with cost and optional notes)
+    5. Architecture Diagram (Generate raw Mermaid code for a flowchart or component diagram representing the system architecture. Do not include any explanatory text or code fences—only the pure Mermaid syntax.)
+    6. Milestones (5-8 phases with duration and description)
+    7. Technical Stack
+    8. Objectives
+    9. Acceptance Criteria
+    10. Resources (list of roles with counts, years_of_experience, responsibilities)
+    11. Cost Analysis (INR currency; list of cost items with cost and optional notes)
     
     Respond ONLY with a single fenced JSON block using triple backticks and the json language tag. No prose before or after.
     
@@ -257,6 +283,7 @@ async def analyze_rfp_with_groq(rfp_text: str) -> GeneratedSolution:
         "solution_approach": [
             {{"title": "Step 1: Title", "description": "Detailed description"}}
         ],
+        "architecture_diagram": "graph TD\\nA[Client] --> B[Server]\\n...", //Raw mermaid code as string
         "milestones": [
             {{"phase": "Phase Name", "duration": "X weeks", "description": "Phase description"}}
         ],
@@ -299,6 +326,14 @@ async def analyze_rfp_with_groq(rfp_text: str) -> GeneratedSolution:
             json_str = response_text[brace_start:brace_end+1]
         
         solution_data = json.loads(json_str)
+
+        if solution_data.get("architecture_diagram"):
+            image_path = render_mermaid_to_image(solution_data["architecture_diagram"])
+            with open(image_path, "rb") as image_file:
+                encoded_image = base64.b64encode(image_file.read()).decode('utf-8')
+                solution_data["architecture_diagram_image"] = f"data:image/png;base64,{encoded_image}"
+            os.remove(image_path)  # Cleanup
+
         return GeneratedSolution(**solution_data)
         
     except Exception as e:
@@ -336,6 +371,7 @@ async def analyze_rfp_with_groq(rfp_text: str) -> GeneratedSolution:
                     "description": "Production deployment with monitoring and support setup"
                 }
             ],
+            architecture_diagram="graph TD\nA[Client] --> B[API Gateway]\nB --> C[Microservice 1]\nB --> D[Microservice 2]",  # Fallback Mermaid code
             milestones=[
                 {"phase": "Planning & Design", "duration": "2 weeks", "description": "Requirements analysis and solution design"},
                 {"phase": "Development Phase 1", "duration": "4 weeks", "description": "Core functionality development"},
@@ -428,6 +464,18 @@ def create_word_document(solution: GeneratedSolution) -> str:
     for i, step in enumerate(solution.solution_approach, 1):
         doc.add_heading(f'{step.title}', level=2)
         doc.add_paragraph(step.description)
+
+    if solution.architecture_diagram:
+        h = doc.add_heading('Architecture Diagram', level=1)
+        bookmark_id = _add_bookmark(h, 'sec_architecture_diagram', bookmark_id)
+        try:
+            image_path = render_mermaid_to_image(solution.architecture_diagram)
+            doc.add_picture(image_path, width=Inches(6.0))
+            # Cleanup temp image
+            os.remove(image_path)
+        except Exception as e:
+            print(f"Error rendering diagram: {str(e)}")
+            doc.add_paragraph("Architecture Diagram (fallback textual description):\n" + solution.architecture_diagram)
 
     h = doc.add_heading('Technical Stack', level=1)
     bookmark_id = _add_bookmark(h, 'sec_technical_stack', bookmark_id)
