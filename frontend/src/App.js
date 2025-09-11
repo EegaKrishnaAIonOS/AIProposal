@@ -1,8 +1,9 @@
 import React, {useState} from 'react';
-import { AlertCircle, Settings } from 'lucide-react';
+import { AlertCircle, Settings, History } from 'lucide-react';
 import FileUploader from './components/FileUploader.jsx';
 import ActionButtons from './components/ActionButtons.jsx';
 import PreviewCard from './components/PreviewCard.jsx';
+import GeneratedSolutions from './components/GeneratedSolutions.jsx';
 
 const RFPSolutionGenerator = () => {
   const [file, setFile] = useState(null);
@@ -12,6 +13,7 @@ const RFPSolutionGenerator = () => {
   const [downloaded, setDownloaded] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
   const [inputText, setInputText] = useState('');
+  const [showSolutions, setShowSolutions] = useState(false);
 
   const onFileSelected = (f) => {
     setFile(f);
@@ -54,6 +56,20 @@ const RFPSolutionGenerator = () => {
       }
       setSolution(data);
       setIsEditing(false);
+
+      // Save generated solution to database
+      try {
+        await fetch('/api/solutions', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(data),
+        });
+      } catch (saveError) {
+        console.error('Failed to save solution:', saveError);
+      }
+
     } catch (err) {
       setError(err.message);
     } finally {
@@ -118,8 +134,17 @@ const RFPSolutionGenerator = () => {
               <Settings className="h-8 w-8 text-blue-600 mr-3" />
               <h1 className="text-2xl font-bold text-gray-900">RFP Solution Generator</h1>
             </div>
-            <div className="text-sm text-gray-500">
-              Professional Proposal Automation
+            <div className="flex items-center gap-4">
+              <button
+                onClick={() => setShowSolutions(true)}
+                className="flex items-center gap-2 bg-gray-100 hover:bg-gray-200 px-4 py-2 rounded-md text-sm font-medium text-gray-700"
+              >
+                <History className="h-4 w-4" />
+                Generated Solutions
+              </button>
+              <div className="text-sm text-gray-500">
+                Professional Proposal Automation
+              </div>
             </div>
           </div>
         </div>
@@ -268,6 +293,11 @@ const RFPSolutionGenerator = () => {
           </div>
         </div>
       </main>
+
+      {/* Generated Solutions Modal */}
+      {showSolutions && (
+        <GeneratedSolutions onClose={() => setShowSolutions(false)} />
+      )}
     </div>
   );
 }

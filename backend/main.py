@@ -1,10 +1,12 @@
-from fastapi import FastAPI,File,UploadFile,HTTPException
+from fastapi import FastAPI, File, UploadFile, HTTPException, Depends
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import List,Optional
-import os,json,tempfile,shutil
+from typing import List, Optional
+import os, json, tempfile, shutil
 from datetime import datetime
+from sqlalchemy.orm import Session
+from database import get_db, Solution as DBSolution
 import asyncio
 from groq import Groq
 from dotenv import load_dotenv
@@ -628,6 +630,36 @@ async def generate_solution_text(body: GenerateTextBody):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error generating from text: {str(e)}")
 
+@app.post("/api/solutions")
+async def save_solution(solution: GeneratedSolution, db: Session = Depends(get_db)):
+    """Save a generated solution to the database and filesystem"""
+    try:
+        # Create Word document and save to generated_solutions folder
+        solutions_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'generated_solutions')
+        if not os.path.exists(solutions_dir):
+            os.makedirs(solutions_dir)
+            
+        file_name = f"{solution.title.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.docx"
+        doc_path = os.path.join(solutions_dir, file_name)
+        
+        # Create the document
+        doc = create_word_document(solution)
+        shutil.move(doc, doc_path)
+        
+        # Save to database
+        solution_record = DBSolution(
+            title=solution.title,
+            file_path=doc_path
+        )
+        db.add(solution_record)
+        db.commit()
+        db.refresh(solution_record)
+        
+        return {"id": solution_record.id}
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error saving solution: {str(e)}")
+
 @app.post("/api/download-solution")
 async def download_solution(solution: GeneratedSolution):
     """Download generated solution as Word document"""
@@ -654,6 +686,37 @@ async def get_company_logo():
     if not os.path.exists(logo_path):
         raise HTTPException(status_code=404, detail="Logo not found")
     return FileResponse(logo_path, media_type='image/png', filename='AIONOS_logo.png')
+
+@app.get("/api/solutions")
+async def get_solutions(db: Session = Depends(get_db)):
+    """Get list of all generated solutions"""
+    solutions = db.query(DBSolution).order_by(DBSolution.generated_date.desc()).all()
+    return [
+        {
+            "id": solution.id,
+            "title": solution.title,
+            "generated_date": solution.generated_date.isoformat(),
+            "file_path": solution.file_path
+        }
+        for solution in solutions
+    ]
+
+@app.get("/api/solutions/{solution_id}")
+async def get_solution(solution_id: int, db: Session = Depends(get_db)):
+    """Get a specific solution by ID"""
+    solution = db.query(DBSolution).filter(DBSolution.id == solution_id).first()
+    if not solution:
+        raise HTTPException(status_code=404, detail="Solution not found")
+    
+    file_path = solution.file_path
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="Solution file not found")
+    
+    return FileResponse(
+        file_path,
+        media_type='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        filename=f'{solution.title}.docx'
+    )
 
 @app.get("/api/health")
 async def health_check():
