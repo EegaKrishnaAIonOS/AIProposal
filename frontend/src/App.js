@@ -1,5 +1,5 @@
 import React, {useState} from 'react';
-import { AlertCircle, Settings, History } from 'lucide-react';
+import { AlertCircle, Settings, History, Upload } from 'lucide-react';
 import FileUploader from './components/FileUploader.jsx';
 import ActionButtons from './components/ActionButtons.jsx';
 import PreviewCard from './components/PreviewCard.jsx';
@@ -135,15 +135,24 @@ const RFPSolutionGenerator = () => {
               <h1 className="text-2xl font-bold text-gray-900">RFP Solution Generator</h1>
             </div>
             <div className="flex items-center gap-4">
-              <button
-                onClick={() => setShowSolutions(true)}
-                className="flex items-center gap-2 bg-gray-100 hover:bg-gray-200 px-4 py-2 rounded-md text-sm font-medium text-gray-700"
-              >
-                <History className="h-4 w-4" />
-                Generated Solutions
-              </button>
-              <div className="text-sm text-gray-500">
-                Professional Proposal Automation
+              <div className="flex items-center gap-4">
+                <button
+                  onClick={() => setShowSolutions(true)}
+                  className="flex items-center gap-2 bg-gray-100 hover:bg-gray-200 px-4 py-2 rounded-md text-sm font-medium text-gray-700"
+                >
+                  <History className="h-4 w-4" />
+                  Generated Solutions
+                </button>
+                <button
+                  // onClick={() => setShowUpload(true)}
+                  className="flex items-center gap-2 bg-gray-100 hover:bg-gray-200 px-4 py-2 rounded-md text-sm font-medium text-gray-700"
+                >
+                  <Upload className="h-4 w-4" />
+                  Upload Solution
+                </button>
+                <div className="text-sm text-gray-500">
+                  Professional Proposal Automation
+                </div>
               </div>
             </div>
           </div>
