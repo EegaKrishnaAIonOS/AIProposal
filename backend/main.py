@@ -155,7 +155,8 @@ def _add_page_number_footer(doc: Document) -> None:
 
 # Utility: add a bookmark to a heading paragraph and add PAGEREF fields
 
-def _add_bookmark(paragraph, name: str, bm_id: int) -> int:
+def _add_bookmark(paragraph, name: str, bm_id: int) -> None:
+    """Add a bookmark to a paragraph"""
     start = OxmlElement('w:bookmarkStart')
     start.set(qn('w:id'), str(bm_id))
     start.set(qn('w:name'), name)
@@ -163,7 +164,6 @@ def _add_bookmark(paragraph, name: str, bm_id: int) -> int:
     end.set(qn('w:id'), str(bm_id))
     paragraph._p.insert(0, start)
     paragraph._p.append(end)
-    return bm_id + 1
 
 
 def _add_pageref_to_cell(cell, bookmark_name: str) -> None:
@@ -413,6 +413,11 @@ def create_word_document(solution: GeneratedSolution) -> str:
     """Create a Word document from the generated solution"""
     doc = Document()
 
+    from company_info import COMPANY_ABOUT
+
+    # Initialize bookmark_id
+    bookmark_id = 1
+
     # Make fields update on open
     try:
         settings = doc.settings
@@ -447,22 +452,34 @@ def create_word_document(solution: GeneratedSolution) -> str:
     doc.add_heading('Contents', level=1)
     _insert_toc(doc)
 
+    # About Company section
+    doc.add_page_break()
+    h = doc.add_heading('About Company', level=1)
+    # Add bookmark without assigning the return value back
+    _add_bookmark(h, 'sec_about_company', bookmark_id)
+    
+    # Split the company info into paragraphs and add them
+    for paragraph_text in COMPANY_ABOUT.strip().split('\n\n'):
+        if paragraph_text.strip():
+            p = doc.add_paragraph()
+            p.add_run(paragraph_text.strip())
+
     # Content sections
     doc.add_page_break()
     bookmark_id = 1
 
     h = doc.add_heading('Problem Statement', level=1)
-    bookmark_id = _add_bookmark(h, 'sec_problem_statement', bookmark_id)
+    _add_bookmark(h, 'sec_problem_statement', bookmark_id)
     doc.add_paragraph(solution.problem_statement)
 
     h = doc.add_heading('Key Challenges', level=1)
-    bookmark_id = _add_bookmark(h, 'sec_key_challenges', bookmark_id)
+    _add_bookmark(h, 'sec_key_challenges', bookmark_id)
     for challenge in solution.key_challenges:
         p = doc.add_paragraph(style='List Bullet')
         p.add_run(challenge)
 
     h = doc.add_heading('Our Solution Approach', level=1)
-    bookmark_id = _add_bookmark(h, 'sec_solution_approach', bookmark_id)
+    _add_bookmark(h, 'sec_solution_approach', bookmark_id)
     for i, step in enumerate(solution.solution_approach, 1):
         doc.add_heading(f'{step.title}', level=2)
         doc.add_paragraph(step.description)
@@ -480,13 +497,13 @@ def create_word_document(solution: GeneratedSolution) -> str:
             doc.add_paragraph("Architecture Diagram (fallback textual description):\n" + solution.architecture_diagram)
 
     h = doc.add_heading('Technical Stack', level=1)
-    bookmark_id = _add_bookmark(h, 'sec_technical_stack', bookmark_id)
+    _add_bookmark(h, 'sec_technical_stack', bookmark_id)
     for tech in solution.technical_stack:
         p = doc.add_paragraph(style='List Bullet')
         p.add_run(tech)
 
     h = doc.add_heading('Key Milestones', level=1)
-    bookmark_id = _add_bookmark(h, 'sec_key_milestones', bookmark_id)
+    _add_bookmark(h, 'sec_key_milestones', bookmark_id)
     table = doc.add_table(rows=1, cols=3)
     table.style = 'Table Grid'
     hdr_cells = table.rows[0].cells
@@ -504,19 +521,19 @@ def create_word_document(solution: GeneratedSolution) -> str:
         row_cells[2].text = milestone.description
 
     h = doc.add_heading('Objectives', level=1)
-    bookmark_id = _add_bookmark(h, 'sec_objectives', bookmark_id)
+    _add_bookmark(h, 'sec_objectives', bookmark_id)
     for objective in solution.objectives:
         p = doc.add_paragraph(style='List Bullet')
         p.add_run(objective)
 
     h = doc.add_heading('Acceptance Criteria', level=1)
-    bookmark_id = _add_bookmark(h, 'sec_acceptance_criteria', bookmark_id)
+    _add_bookmark(h, 'sec_acceptance_criteria', bookmark_id)
     for criteria in solution.acceptance_criteria:
         p = doc.add_paragraph(style='List Bullet')
         p.add_run(criteria)
 
     h = doc.add_heading('Resources', level=1)
-    bookmark_id = _add_bookmark(h, 'sec_resources', bookmark_id)
+    _add_bookmark(h, 'sec_resources', bookmark_id)
     r_table = doc.add_table(rows=1, cols=4)
     r_table.style = 'Table Grid'
     r_hdr = r_table.rows[0].cells
@@ -536,7 +553,7 @@ def create_word_document(solution: GeneratedSolution) -> str:
         row[3].text = res.responsibilities or ""
 
     h = doc.add_heading('Cost Analysis', level=1)
-    bookmark_id = _add_bookmark(h, 'sec_cost_analysis', bookmark_id)
+    _add_bookmark(h, 'sec_cost_analysis', bookmark_id)
     c_table = doc.add_table(rows=1, cols=3)
     c_table.style = 'Table Grid'
     c_hdr = c_table.rows[0].cells
