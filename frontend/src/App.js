@@ -172,15 +172,6 @@ const RFPSolutionGenerator = () => {
             <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
               <h2 className="text-lg font-semibold text-gray-900 mb-4">Provide Input</h2>
 
-              <FileUploader onFileSelected={onFileSelected} error={error} onError={setError} />
-
-              {/* OR divider */}
-              <div className="my-4 flex items-center">
-                <div className="flex-1 h-px bg-gray-200"/>
-                <span className="px-3 text-xs text-gray-500">OR</span>
-                <div className="flex-1 h-px bg-gray-200"/>
-              </div>
-
               {/* Textarea alternative */}
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">Problem Statement / Use Case</label>
@@ -191,8 +182,17 @@ const RFPSolutionGenerator = () => {
                   value={inputText}
                   onChange={(e) => setInputText(e.target.value)}
                 />
-                <p className="mt-1 text-xs text-gray-500">Either upload a document above or enter text here.</p>
+                <p className="mt-1 text-xs text-gray-500">Either upload a document below or enter text here.</p>
               </div>
+
+              {/* OR divider */}
+              <div className="my-4 flex items-center">
+                <div className="flex-1 h-px bg-gray-200"/>
+                <span className="px-3 text-xs text-gray-500">OR</span>
+                <div className="flex-1 h-px bg-gray-200"/>
+              </div>
+
+              <FileUploader onFileSelected={onFileSelected} error={error} onError={setError} />
 
               {isProcessing && (
                 <div className="mb-4">
