@@ -106,6 +106,24 @@ export default function PreviewCard({ solution, editable = false, onChange }) {
     updateField('cost_analysis', arr);
   };
 
+  // KPI helpers
+  const updateKPI = (index, patch) => {
+    const arr = [...(solution.key_performance_indicators || [])];
+    arr[index] = { ...arr[index], ...patch };
+    updateField('key_performance_indicators', arr);
+  };
+  const addKPI = () => addListItem('key_performance_indicators', { 
+    metric: 'New KPI', 
+    target: 'Target Value', 
+    measurement_method: 'Measurement Method',
+    frequency: 'Monthly'
+  });
+  const removeKPI = (index) => {
+    const arr = [...(solution.key_performance_indicators || [])];
+    arr.splice(index, 1);
+    updateField('key_performance_indicators', arr);
+  };
+
   return (
     <div className="space-y-6">
       <div className="border border-dashed border-gray-300 rounded-lg p-6">
@@ -440,6 +458,73 @@ export default function PreviewCard({ solution, editable = false, onChange }) {
                       <td className="px-4 py-2 border-b align-top">{c.item}</td>
                       <td className="px-4 py-2 border-b align-top">{c.cost}</td>
                       <td className="px-4 py-2 border-b align-top">{c.notes}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </Section>
+      )}
+
+      {/* Key Performance Indicators */}
+      {solution.key_performance_indicators?.length > 0 && (
+        <Section title="Key Performance Indicators">
+          {editable ? (
+            <div className="space-y-3">
+              {solution.key_performance_indicators.map((kpi, i) => (
+                <div key={i} className="grid grid-cols-1 md:grid-cols-12 gap-2 items-start">
+                  <input 
+                    className="md:col-span-3 border rounded px-3 py-2 text-sm" 
+                    value={kpi.metric} 
+                    onChange={e => updateKPI(i, { metric: e.target.value })} 
+                    placeholder="Metric"
+                  />
+                  <input 
+                    className="md:col-span-2 border rounded px-3 py-2 text-sm" 
+                    value={kpi.target} 
+                    onChange={e => updateKPI(i, { target: e.target.value })} 
+                    placeholder="Target"
+                  />
+                  <input 
+                    className="md:col-span-3 border rounded px-3 py-2 text-sm" 
+                    value={kpi.measurement_method} 
+                    onChange={e => updateKPI(i, { measurement_method: e.target.value })} 
+                    placeholder="Measurement Method"
+                  />
+                  <input 
+                    className="md:col-span-3 border rounded px-3 py-2 text-sm" 
+                    value={kpi.frequency || ''} 
+                    onChange={e => updateKPI(i, { frequency: e.target.value })} 
+                    placeholder="Frequency"
+                  />
+                  <button onClick={() => removeKPI(i)} className="md:col-span-1 p-2 text-red-600 hover:bg-red-50 rounded">
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+              ))}
+              <button onClick={addKPI} className="text-blue-600 text-sm inline-flex items-center">
+                <Plus className="h-4 w-4 mr-1"/> Add KPI
+              </button>
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="min-w-full text-left border border-gray-200 rounded-lg overflow-hidden">
+                <thead className="bg-gray-50">
+                  <tr>
+                    <th className="px-4 py-2 text-sm font-semibold text-gray-700 border-b">Metric</th>
+                    <th className="px-4 py-2 text-sm font-semibold text-gray-700 border-b">Target</th>
+                    <th className="px-4 py-2 text-sm font-semibold text-gray-700 border-b">Measurement Method</th>
+                    <th className="px-4 py-2 text-sm font-semibold text-gray-700 border-b">Frequency</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {solution.key_performance_indicators.map((kpi, i) => (
+                    <tr key={i} className="odd:bg-white even:bg-gray-50">
+                      <td className="px-4 py-2 border-b align-top">{kpi.metric}</td>
+                      <td className="px-4 py-2 border-b align-top">{kpi.target}</td>
+                      <td className="px-4 py-2 border-b align-top">{kpi.measurement_method}</td>
+                      <td className="px-4 py-2 border-b align-top">{kpi.frequency}</td>
                     </tr>
                   ))}
                 </tbody>

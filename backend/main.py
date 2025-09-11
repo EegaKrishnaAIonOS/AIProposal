@@ -61,6 +61,12 @@ class CostItem(BaseModel):
     cost: str
     notes: Optional[str] = None
 
+class KPIItem(BaseModel):
+    metric: str
+    target: str
+    measurement_method: str
+    frequency: Optional[str] = None
+
 class GeneratedSolution(BaseModel):
     title: str
     date: str
@@ -75,6 +81,7 @@ class GeneratedSolution(BaseModel):
     acceptance_criteria: List[str]
     resources: List[ResourceItem]
     cost_analysis: List[CostItem]
+    key_performance_indicators: List[KPIItem]
 
 class GenerateTextBody(BaseModel):
     text: str
@@ -270,6 +277,7 @@ async def analyze_rfp_with_groq(rfp_text: str) -> GeneratedSolution:
     9. Acceptance Criteria
     10. Resources (list of roles with counts, years_of_experience, responsibilities)
     11. Cost Analysis (INR currency; list of cost items with cost and optional notes)
+    12. Key Performance Indicators (4-6 KPIs with metric name, target value, measurement method, and measurement frequency)
     
     Respond ONLY with a single fenced JSON block using triple backticks and the json language tag. No prose before or after.
     
@@ -297,6 +305,9 @@ async def analyze_rfp_with_groq(rfp_text: str) -> GeneratedSolution:
         ],
         "cost_analysis": [
             {{"item": "Item name", "cost": "₹750,000", "notes": "Optional note"}}
+        ],
+        "key_performance_indicators": [
+            {{"metric": "KPI Name", "target": "Target value", "measurement_method": "How it will be measured", "frequency": "Measurement frequency"}}
         ]
     }}
     """
@@ -394,6 +405,13 @@ async def analyze_rfp_with_groq(rfp_text: str) -> GeneratedSolution:
                 "Performance benchmarks achieved",
                 "Security compliance verified",
                 "User acceptance testing completed successfully"
+            ],
+            key_performance_indicators=[
+                {"metric": "System Uptime", "target": "99.9%", "measurement_method": "Automated monitoring tools", "frequency": "Continuous"},
+                {"metric": "Response Time", "target": "< 2 seconds", "measurement_method": "Application performance monitoring", "frequency": "Hourly"},
+                {"metric": "User Satisfaction", "target": "> 4.5/5", "measurement_method": "User surveys and feedback", "frequency": "Quarterly"},
+                {"metric": "Bug Resolution Time", "target": "< 24 hours", "measurement_method": "Issue tracking system", "frequency": "Weekly"},
+                {"metric": "System Security Score", "target": "> 90%", "measurement_method": "Security assessment tools", "frequency": "Monthly"}
             ],
             resources=[
                 {"role": "Project Manager", "count": 1, "years_of_experience": 10, "responsibilities": "Project governance and stakeholder communication"},
@@ -569,6 +587,27 @@ def create_word_document(solution: GeneratedSolution) -> str:
         row[0].text = ci.item
         row[1].text = ci.cost
         row[2].text = ci.notes or ""
+
+    # Add KPI Section
+    h = doc.add_heading('Key Performance Indicators', level=1)
+    _add_bookmark(h, 'sec_kpi', bookmark_id)
+    kpi_table = doc.add_table(rows=1, cols=4)
+    kpi_table.style = 'Table Grid'
+    kpi_hdr = kpi_table.rows[0].cells
+    kpi_hdr[0].text = 'Metric'
+    kpi_hdr[1].text = 'Target'
+    kpi_hdr[2].text = 'Measurement Method'
+    kpi_hdr[3].text = 'Frequency'
+    for cell in kpi_hdr:
+        for paragraph in cell.paragraphs:
+            for run in paragraph.runs:
+                run.font.bold = True
+    for kpi in solution.key_performance_indicators:
+        row = kpi_table.add_row().cells
+        row[0].text = kpi.metric
+        row[1].text = kpi.target
+        row[2].text = kpi.measurement_method
+        row[3].text = kpi.frequency or ""
 
     temp_dir = tempfile.gettempdir()
     doc_path = os.path.join(temp_dir, f'technical_proposal_{datetime.now().strftime("%Y%m%d_%H%M%S")}.docx')
