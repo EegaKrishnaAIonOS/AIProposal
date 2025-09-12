@@ -303,7 +303,7 @@ export default function PreviewCard({ solution, editable = false, onChange }) {
       )}
 
       {solution.technical_stack?.length > 0 && (
-        <Section title="Technical Stack">
+        <Section title="Technology Stack">
           {editable ? (
             <div className="space-y-2">
               {solution.technical_stack.map((tech, i) => (

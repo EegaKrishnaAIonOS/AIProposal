@@ -514,7 +514,7 @@ def create_word_document(solution: GeneratedSolution) -> str:
             print(f"Error rendering diagram: {str(e)}")
             doc.add_paragraph("Architecture Diagram (fallback textual description):\n" + solution.architecture_diagram)
 
-    h = doc.add_heading('Technical Stack', level=1)
+    h = doc.add_heading('Technology Stack', level=1)
     _add_bookmark(h, 'sec_technical_stack', bookmark_id)
     for tech in solution.technical_stack:
         p = doc.add_paragraph(style='List Bullet')
