@@ -245,6 +245,7 @@ const RFPSolutionGenerator = () => {
                 onDownload={downloadSolution}
                 onReset={resetForm}
               />
+              <p className="mt-1 text-xs text-gray-500">Once you download the generated document file,open the file and click on references and click on update table button to update page numbers</p>
 
               {/* Error Display */}
               {error && (
