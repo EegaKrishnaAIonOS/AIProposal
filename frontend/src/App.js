@@ -4,6 +4,7 @@ import FileUploader from './components/FileUploader.jsx';
 import ActionButtons from './components/ActionButtons.jsx';
 import PreviewCard from './components/PreviewCard.jsx';
 import GeneratedSolutions from './components/GeneratedSolutions.jsx';
+import UploadSolutionModal from './components/UploadSolutionModal.jsx';
 
 const RFPSolutionGenerator = () => {
   const [file, setFile] = useState(null);
@@ -14,6 +15,7 @@ const RFPSolutionGenerator = () => {
   const [isEditing, setIsEditing] = useState(false);
   const [inputText, setInputText] = useState('');
   const [showSolutions, setShowSolutions] = useState(false);
+  const [showUpload, setShowUpload] = useState(false);
 
   const onFileSelected = (f) => {
     setFile(f);
@@ -144,7 +146,7 @@ const RFPSolutionGenerator = () => {
                   Generated Solutions
                 </button>
                 <button
-                  // onClick={() => setShowUpload(true)}
+                  onClick={() => setShowUpload(true)}
                   className="flex items-center gap-2 bg-gray-100 hover:bg-gray-200 px-4 py-2 rounded-md text-sm font-medium text-gray-700"
                 >
                   <Upload className="h-4 w-4" />
@@ -307,6 +309,9 @@ const RFPSolutionGenerator = () => {
       {/* Generated Solutions Modal */}
       {showSolutions && (
         <GeneratedSolutions onClose={() => setShowSolutions(false)} />
+      )}
+      {showUpload && (
+        <UploadSolutionModal onClose={() => setShowUpload(false)} />
       )}
     </div>
   );
