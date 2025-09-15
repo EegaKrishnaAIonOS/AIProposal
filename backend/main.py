@@ -19,6 +19,14 @@ import requests,base64
 
 app = FastAPI(title="RFP Solution Generator")
 
+# Include upload routes
+try:
+    from upload_routes import router as upload_router
+    app.include_router(upload_router)
+except Exception:
+    # If import fails during static analysis, skip. Runtime should work when packages installed.
+    pass
+
 load_dotenv()
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
@@ -270,7 +278,13 @@ async def analyze_rfp_with_groq(rfp_text: str) -> GeneratedSolution:
     2. Problem Statement
     3. Key Challenges (3-5 items)
     4. Solution Approach (4-6 steps with title and description for each)
-    5. Architecture Diagram (Generate raw Mermaid code for a flowchart or component diagram representing the system architecture. Do not include any explanatory text or code fences—only the pure Mermaid syntax.)
+    5. Architecture Diagram (Generate valid **Mermaid syntax only**,suitable  for a flowchart or component diagram representing the system architecture.
+       Use proper syntax like:
+       graph TD
+         A[Client] --> B[Server]
+         B --> C[Database]
+       Do not include any explanations, prose, code fences, or comments.  
+       Only the raw Mermaid code as a string.)
     6. Milestones (5-8 phases with duration and description)
     7. Technical Stack
     8. Objectives
