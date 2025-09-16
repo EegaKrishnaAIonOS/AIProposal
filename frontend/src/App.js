@@ -1,10 +1,14 @@
 import React, {useState} from 'react';
+import {useNavigate} from 'react-router-dom';
 import { AlertCircle, Settings, History, Upload } from 'lucide-react';
 import FileUploader from './components/FileUploader.jsx';
 import ActionButtons from './components/ActionButtons.jsx';
 import PreviewCard from './components/PreviewCard.jsx';
 import GeneratedSolutions from './components/GeneratedSolutions.jsx';
 import UploadSolutionModal from './components/UploadSolutionModal.jsx';
+import {BrowserRouter as Router, Route, Routes, Navigate} from 'react-router-dom';
+import Login from './pages/Login';
+import Home from './pages/Home';
 
 const RFPSolutionGenerator = () => {
   const [file, setFile] = useState(null);
@@ -16,6 +20,8 @@ const RFPSolutionGenerator = () => {
   const [inputText, setInputText] = useState('');
   const [showSolutions, setShowSolutions] = useState(false);
   const [showUpload, setShowUpload] = useState(false);
+  const [showLogoutModal,setShowLogoutModal]=useState(false);
+  const navigate = useNavigate();
 
   const onFileSelected = (f) => {
     setFile(f);
@@ -156,6 +162,7 @@ const RFPSolutionGenerator = () => {
                   Professional Proposal Automation
                 </div>
               </div>
+              <button onClick={() => setShowLogoutModal(true)} className="flex items-center gap-2 bg-red-500 hover:bg-red-600 px-4 py-2 rounded-md text-sm font-medium text-white">Logout </button>
             </div>
           </div>
         </div>
@@ -313,8 +320,69 @@ const RFPSolutionGenerator = () => {
       {showUpload && (
         <UploadSolutionModal onClose={() => setShowUpload(false)} />
       )}
+      {/* Logout Modal */}
+      {showLogoutModal && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          width: '100vw',
+          height: '100vh',
+          background: 'rgba(0,0,0,0.2)',
+          zIndex: 1000,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          backdropFilter: 'blur(4px)'
+        }}>
+          <div style={{
+            background: '#fff',
+            borderRadius: '12px',
+            boxShadow: '0 2px 16px rgba(0,0,0,0.15)',
+            padding: '2rem 2.5rem',
+            minWidth: '320px',
+            textAlign: 'center',
+            zIndex: 1001
+          }}>
+            <h2 style={{ fontWeight: 'bold', fontSize: '1.25rem', marginBottom: '1rem' }}>Confirm Logout</h2>
+            <p style={{ marginBottom: '1.5rem', color: '#444' }}>Are you sure you want to logout?</p>
+            <div style={{ display: 'flex', justifyContent: 'center', gap: '1rem' }}>
+              <button
+                onClick={() => {
+                  setShowLogoutModal(false);
+                  navigate('/login');
+                }}
+                style={{ background: '#2563eb', color: '#fff', border: 'none', borderRadius: '6px', padding: '0.5rem 1.5rem', fontWeight: 'bold', cursor: 'pointer' }}
+              >
+                Yes, Logout
+              </button>
+              <button
+                onClick={() => setShowLogoutModal(false)}
+                style={{ background: '#eee', color: '#333', border: 'none', borderRadius: '6px', padding: '0.5rem 1.5rem', fontWeight: 'bold', cursor: 'pointer' }}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
-export default RFPSolutionGenerator;
+function App() {
+  return (
+    <Router>
+      <Routes>
+        <Route path="/login" element={<Login />} />
+        <Route path="/home" element={<Home />} />
+        <Route path="/logout" element={<Navigate to="/login" replace />} />
+        <Route path="/rfp" element={<RFPSolutionGenerator />} />
+        <Route path="/" element={<Navigate to="/login" replace />} />
+      </Routes>
+    </Router>
+  );
+}
+ 
+export default App;
+ 
