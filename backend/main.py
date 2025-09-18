@@ -34,7 +34,7 @@ if not GROQ_API_KEY:
     raise ValueError("GROQ_API_KEY environment variable is required")
 
 # New: environment-driven configuration
-GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
 ALLOWED_ORIGINS = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "http://localhost:3000").split(",") if o.strip()]
 MAX_FILE_SIZE_MB = int(os.getenv("MAX_FILE_SIZE_MB", "10"))
 MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
@@ -270,7 +270,8 @@ async def analyze_rfp_with_groq(rfp_text: str) -> GeneratedSolution:
     """Analyze RFP text using Groq and generate solution"""
     
     prompt = f"""
-    You are an expert technical consultant specializing in creating detailed technical proposals for RFPs. 
+    You are an expert technical consultant specializing in creating detailed technical proposals for RFPs. Try to identify the field/domain of the RFP and tailor the solution accordingly. 
+    While drafting the solution, ensure to incorporate the domain knowledge, and include proper jargoan.
     
     Based on the following RFP document, generate a comprehensive technical proposal that follows this structure:
     
@@ -278,7 +279,7 @@ async def analyze_rfp_with_groq(rfp_text: str) -> GeneratedSolution:
     2. Problem Statement
     3. Key Challenges (3-5 items)
     4. Solution Approach (4-6 steps with title and description for each)
-    5. Architecture Diagram (Generate valid **Mermaid syntax only**,suitable  for a flowchart or component diagram representing the system architecture.
+    5. Architecture Diagram (Generate valid **Mermaid syntax only**,suitable  for a  component diagram  representing the system architecture that includes the AI components like LLMs etc, if applicable.
        Use proper syntax like:
        graph TD
          A[Client] --> B[Server]

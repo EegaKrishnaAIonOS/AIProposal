@@ -349,6 +349,9 @@ const RFPSolutionGenerator = () => {
             <div style={{ display: 'flex', justifyContent: 'center', gap: '1rem' }}>
               <button
                 onClick={() => {
+                  // Clear session and notify App to clear auth
+                  try { sessionStorage.removeItem('aionos_auth'); } catch (err) {}
+                  try { window.dispatchEvent(new Event('aionos:logout')); } catch (err) {}
                   setShowLogoutModal(false);
                   navigate('/login');
                 }}
@@ -371,13 +374,29 @@ const RFPSolutionGenerator = () => {
 }
 
 function App() {
+  const [authed, setAuthed] = React.useState(false);
+
+  const RequireAuth = ({ children }) => {
+    if (!authed) {
+      return <Navigate to="/login" replace />;
+    }
+    return children;
+  };
+  // Listen for global logout events (dispatched from inside components)
+  React.useEffect(() => {
+    const handler = () => setAuthed(false);
+    window.addEventListener('aionos:logout', handler);
+    // Try to recover session if sessionStorage has flag
+    try { if (sessionStorage.getItem('aionos_auth') === '1') setAuthed(true); } catch (err) {}
+    return () => window.removeEventListener('aionos:logout', handler);
+  }, []);
   return (
     <Router>
       <Routes>
-        <Route path="/login" element={<Login />} />
-        <Route path="/home" element={<Home />} />
+        <Route path="/login" element={<Login onAuth={() => setAuthed(true)} />} />
+        <Route path="/home" element={<Home onLogout={() => setAuthed(false)} />} />
         <Route path="/logout" element={<Navigate to="/login" replace />} />
-        <Route path="/rfp" element={<RFPSolutionGenerator />} />
+        <Route path="/rfp" element={<RequireAuth><RFPSolutionGenerator /></RequireAuth>} />
         <Route path="/" element={<Navigate to="/login" replace />} />
       </Routes>
     </Router>

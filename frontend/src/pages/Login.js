@@ -8,7 +8,7 @@ import LOGO_PATH from "../assets/AIONOS_logo.png";
 const VALID_EMAIL = "Admin@gmail.com";
 const VALID_PASSWORD = "Admin@123";
  
-function Login() {
+function Login({ onAuth }) {
   const navigate = useNavigate();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -30,6 +30,9 @@ function Login() {
     e.preventDefault();
     if (email === VALID_EMAIL && password === VALID_PASSWORD) {
       setError("");
+      // Persist a simple session flag so auth survives refresh in this demo
+      try { sessionStorage.setItem('aionos_auth', '1'); } catch (err) { /* ignore */ }
+      if (typeof onAuth === 'function') onAuth();
       // Redirect to the RFP Solution Generator page after login
       navigate("/rfp");
     } else {

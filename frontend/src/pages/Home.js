@@ -1,11 +1,12 @@
 import React from "react";
 import { useNavigate } from "react-router-dom";
  
-function Home() {
+function Home({ onLogout }) {
   const navigate = useNavigate();
- 
-  // Changed the function back to redirect to the login route ("/")
+
   const handleLogout = () => {
+    try { sessionStorage.removeItem('aionos_auth'); } catch (err) {}
+    if (typeof onLogout === 'function') onLogout();
     navigate("/login");
   };
  
