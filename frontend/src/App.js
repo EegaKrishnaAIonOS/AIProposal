@@ -1,4 +1,4 @@
-import React, {useState} from 'react';
+import React, {useState, useEffect} from 'react';
 import {useNavigate} from 'react-router-dom';
 import { AlertCircle, Settings, History, Upload } from 'lucide-react';
 import FileUploader from './components/FileUploader.jsx';
@@ -6,9 +6,18 @@ import ActionButtons from './components/ActionButtons.jsx';
 import PreviewCard from './components/PreviewCard.jsx';
 import GeneratedSolutions from './components/GeneratedSolutions.jsx';
 import UploadSolutionModal from './components/UploadSolutionModal.jsx';
-import {BrowserRouter as Router, Route, Routes, Navigate} from 'react-router-dom';
+import {BrowserRouter as Router, Route, Routes, Navigate, Outlet} from 'react-router-dom';
 import Login from './pages/Login';
 import Home from './pages/Home';
+import Contact from './pages/Contact';
+
+// This new component handles the authentication check
+const ProtectedRoute = ({ authed, redirectPath = '/login' }) => {
+  if (!authed) {
+    return <Navigate to={redirectPath} replace />;
+  }
+  return <Outlet />;
+};
 
 const RFPSolutionGenerator = () => {
   const [file, setFile] = useState(null);
@@ -353,7 +362,7 @@ const RFPSolutionGenerator = () => {
                   try { sessionStorage.removeItem('aionos_auth'); } catch (err) {}
                   try { window.dispatchEvent(new Event('aionos:logout')); } catch (err) {}
                   setShowLogoutModal(false);
-                  navigate('/login');
+                  navigate('/');
                 }}
                 style={{ background: '#2563eb', color: '#fff', border: 'none', borderRadius: '6px', padding: '0.5rem 1.5rem', fontWeight: 'bold', cursor: 'pointer' }}
               >
@@ -376,28 +385,39 @@ const RFPSolutionGenerator = () => {
 function App() {
   const [authed, setAuthed] = React.useState(false);
 
-  const RequireAuth = ({ children }) => {
-    if (!authed) {
-      return <Navigate to="/login" replace />;
+  useEffect(() => {
+    // Check for a specific reload event to handle /rfp refresh logic
+    const isReload = (performance.getEntriesByType && performance.getEntriesByType('navigation')[0]?.type === 'reload') || (performance && performance.navigation?.type === 1);
+    const isRFP = window.location.pathname === '/rfp';
+    
+    // If the page is reloaded and it's the RFP page, treat it as a logout
+    if (isReload && isRFP) {
+      try { sessionStorage.removeItem('aionos_auth'); } catch (err) {}
+      setAuthed(false);
+    } else {
+      // Otherwise, attempt to restore auth from session storage
+      try {
+        if (sessionStorage.getItem('aionos_auth') === '1') {
+          setAuthed(true);
+        }
+      } catch (err) {}
     }
-    return children;
-  };
-  // Listen for global logout events (dispatched from inside components)
-  React.useEffect(() => {
+
     const handler = () => setAuthed(false);
     window.addEventListener('aionos:logout', handler);
-    // Try to recover session if sessionStorage has flag
-    try { if (sessionStorage.getItem('aionos_auth') === '1') setAuthed(true); } catch (err) {}
     return () => window.removeEventListener('aionos:logout', handler);
   }, []);
   return (
     <Router>
       <Routes>
         <Route path="/login" element={<Login onAuth={() => setAuthed(true)} />} />
-        <Route path="/home" element={<Home onLogout={() => setAuthed(false)} />} />
-        <Route path="/logout" element={<Navigate to="/login" replace />} />
-        <Route path="/rfp" element={<RequireAuth><RFPSolutionGenerator /></RequireAuth>} />
-        <Route path="/" element={<Navigate to="/login" replace />} />
+        <Route path="/home" element={<Home />} />
+        <Route path="/contact" element={<Contact />} />
+        <Route path="/logout" element={<Navigate to="/" replace />} />
+        <Route path="/" element={<Home />} />
+        <Route element={<ProtectedRoute authed={authed} />}>
+          <Route path="/rfp" element={<RFPSolutionGenerator />} />
+        </Route>
       </Routes>
     </Router>
   );
