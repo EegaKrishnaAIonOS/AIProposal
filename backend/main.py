@@ -12,7 +12,7 @@ from groq import Groq
 from dotenv import load_dotenv
 import PyPDF2
 from docx import Document
-from docx.shared import Inches, Pt
+from docx.shared import Inches, Pt, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_TAB_ALIGNMENT, WD_TAB_LEADER
 from docx.oxml.shared import OxmlElement, qn
 import requests,base64
@@ -90,9 +90,12 @@ class GeneratedSolution(BaseModel):
     resources: List[ResourceItem]
     cost_analysis: List[CostItem]
     key_performance_indicators: List[KPIItem]
+    product_recommendation: Optional[List[dict]] = None
 
 class GenerateTextBody(BaseModel):
     text: str
+    product_recommendation: Optional[List[dict]] = None
+
 
 # Document extraction functions
 def extract_text_from_pdf(file_path: str) -> str:
@@ -279,12 +282,12 @@ async def analyze_rfp_with_groq(rfp_text: str) -> GeneratedSolution:
     3. Key Challenges (3-5 items)
     4. Solution Approach (4-6 steps with title and description for each)
     5. Architecture Diagram (Generate valid **Mermaid syntax only**,suitable  for a flowchart or component diagram representing the system architecture.
-       Use proper syntax like:
-       graph TD
-         A[Client] --> B[Server]
-         B --> C[Database]
-       Do not include any explanations, prose, code fences, or comments.  
-       Only the raw Mermaid code as a string.)
+        Use proper syntax like:
+        graph TD
+          A[Client] --> B[Server]
+          B --> C[Database]
+        Do not include any explanations, prose, code fences, or comments.  
+        Only the raw Mermaid code as a string.)
     6. Milestones (5-8 phases with duration and description)
     7. Technical Stack
     8. Objectives
@@ -623,6 +626,28 @@ def create_word_document(solution: GeneratedSolution) -> str:
         row[2].text = kpi.measurement_method
         row[3].text = kpi.frequency or ""
 
+    # NEW: Add Recommended AIONOS Services Section
+    if solution.product_recommendation:
+        doc.add_page_break()
+        h = doc.add_heading('AIONOS Product Recommendation', level=1)
+        _add_bookmark(h, 'sec_aionos_services', bookmark_id)
+        
+        for service in solution.product_recommendation:
+            # Add service title as a sub-heading
+            doc.add_heading(service.get('title', 'AIONOS Product'), level=2)
+            
+            # Add description
+            desc_para = doc.add_paragraph()
+            desc_para.add_run(service.get('description', '')).font.size = Pt(11)
+
+            # Add link
+            if service.get('link'):
+                link_para = doc.add_paragraph()
+                link_para.add_run("Learn more at: ")
+                link_run = link_para.add_run(service['link'])
+                link_run.font.color.rgb = RGBColor(0x00, 0x00, 0xFF)  # Blue color
+                link_run.font.underline = True
+
     temp_dir = tempfile.gettempdir()
     doc_path = os.path.join(temp_dir, f'technical_proposal_{datetime.now().strftime("%Y%m%d_%H%M%S")}.docx')
     doc.save(doc_path)
@@ -695,10 +720,13 @@ async def generate_solution_text(body: GenerateTextBody):
     if not rfp_text:
         raise HTTPException(status_code=400, detail="Text is required")
     try:
-        solution = await analyze_rfp_with_groq(rfp_text)
+        solution_dict = (await analyze_rfp_with_groq(rfp_text)).model_dump()
+        solution_dict["product_recommendation"] = body.product_recommendation
+        solution = GeneratedSolution(**solution_dict)
         return solution
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error generating from text: {str(e)}")
+
 
 @app.post("/api/solutions")
 async def save_solution(solution: GeneratedSolution, db: Session = Depends(get_db)):
