@@ -1,4 +1,4 @@
-import React, { useState, useRef } from "react";
+import React, { useState, useRef, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 // Import the eye icons from react-icons/fa
 import { FaEye, FaEyeSlash } from "react-icons/fa";
@@ -10,6 +10,23 @@ const VALID_PASSWORD = "Admin@123";
  
 function Login({ onAuth }) {
   const navigate = useNavigate();
+  // Capture optional next target from query string so CTA returns post-login
+  const params = new URLSearchParams(window.location.search);
+  const next = params.get('next') || '/rfp';
+
+  // If the page was reached by a browser reload/refresh, send user back to landing
+  useEffect(() => {
+    try {
+      const navEntries = performance.getEntriesByType && performance.getEntriesByType('navigation');
+      const navType = (navEntries && navEntries.length > 0) ? navEntries[0].type : (performance && performance.navigation ? performance.navigation.type : null);
+      const isReload = navType === 'reload' || navType === 1;
+      if (isReload) {
+        navigate('/');
+      }
+    } catch (e) {
+      // ignore errors and do not block login
+    }
+  }, [navigate]);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
@@ -28,13 +45,13 @@ function Login({ onAuth }) {
  
   const handleSubmit = (e) => {
     e.preventDefault();
-    if (email === VALID_EMAIL && password === VALID_PASSWORD) {
+      if (email === VALID_EMAIL && password === VALID_PASSWORD) {
       setError("");
       // Persist a simple session flag so auth survives refresh in this demo
       try { sessionStorage.setItem('aionos_auth', '1'); } catch (err) { /* ignore */ }
       if (typeof onAuth === 'function') onAuth();
-      // Redirect to the RFP Solution Generator page after login
-      navigate("/rfp");
+      // Redirect to the RFP Solution Generator page (or next param) after login
+      navigate(next);
     } else {
       setError("Invalid Email or Password");
     }
