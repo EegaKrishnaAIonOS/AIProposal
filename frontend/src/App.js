@@ -30,6 +30,7 @@ const RFPSolutionGenerator = () => {
   const [showSolutions, setShowSolutions] = useState(false);
   const [showUpload, setShowUpload] = useState(false);
   const [showLogoutModal,setShowLogoutModal]=useState(false);
+  const [generationMethod, setGenerationMethod] = useState('knowledgeBase'); // 'knowledgeBase' or 'llmOnly'
   const navigate = useNavigate();
 
   const onFileSelected = (f) => {
@@ -51,6 +52,7 @@ const RFPSolutionGenerator = () => {
       if (file) {
         const formData = new FormData();
         formData.append('file', file);
+        formData.append('method', generationMethod); // Pass the selected generation method to the backend
         const response = await fetch('/api/generate-solution', { method: 'POST', body: formData });
         if (!response.ok) {
           let msg = 'Failed to generate solution';
@@ -62,7 +64,7 @@ const RFPSolutionGenerator = () => {
         const response = await fetch('/api/generate-solution-text', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ text: inputText.trim() })
+          body: JSON.stringify({ text: inputText.trim(),method: generationMethod})
         });
         if (!response.ok) {
           let msg = 'Failed to generate solution';
@@ -223,7 +225,36 @@ const RFPSolutionGenerator = () => {
           <div className="lg:col-span-1" id="upload-section">
             <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
               <h2 className="text-lg font-semibold text-gray-900 mb-4">Provide Input</h2>
-
+              {/* Generation Method Selection */}
+              <div className="mb-4">
+                <h3 className="text-sm font-medium text-gray-700 mb-2">Select Generation Method</h3>
+                <div className="space-y-2">
+                  <div className="flex items-center">
+                    <input
+                      type="checkbox"
+                      id="llmOnly"
+                      checked={generationMethod === "llmOnly"}
+                      onChange={() => setGenerationMethod("llmOnly")}
+                      className="form-checkbox h-4 w-4 text-blue-600 transition duration-150 ease-in-out"
+                    />
+                    <label htmlFor="llmOnly" className="ml-2 text-sm text-gray-700">
+                      Generate directly from LLM
+                    </label>
+                  </div>
+                  <div className="flex items-center">
+                    <input
+                      type="checkbox"
+                      id="knowledgeBase"
+                      checked={generationMethod === "knowledgeBase"}
+                      onChange={() => setGenerationMethod("knowledgeBase")}
+                      className="form-checkbox h-4 w-4 text-blue-600 transition duration-150 ease-in-out"
+                    />
+                    <label htmlFor="knowledgeBase" className="ml-2 text-sm text-gray-700">
+                      Generate using Knowledge Base (RAG)
+                    </label>
+                  </div>
+                </div>
+              </div>
               {/* Textarea alternative */}
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">Problem Statement / Use Case</label>
