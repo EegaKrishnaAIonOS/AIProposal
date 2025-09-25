@@ -17,21 +17,50 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_TAB_ALIGNMENT, WD_TAB_LEADER
 from docx.oxml.shared import OxmlElement, qn
 import requests,base64
 
+from pinecone import Pinecone
+from langchain_pinecone import PineconeVectorStore
+
+#from langchain_community.embeddings.sentence_transformer import SentenceTransformerEmbeddings
+from langchain_huggingface import HuggingFaceEmbeddings
+
 app = FastAPI(title="RFP Solution Generator")
 
 # Include upload routes
-try:
-    from upload_routes import router as upload_router
-    app.include_router(upload_router)
-except Exception:
-    # If import fails during static analysis, skip. Runtime should work when packages installed.
-    pass
+# try:
+from upload_routes import router as upload_router
+app.include_router(upload_router)
+# except Exception:
+#     # If import fails during static analysis, skip. Runtime should work when packages installed.
+#     pass
 
 load_dotenv()
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 if not GROQ_API_KEY:
     raise ValueError("GROQ_API_KEY environment variable is required")
+
+# --- NEW PINECONE CONFIGURATION ---
+PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
+PINECONE_ENVIRONMENT = os.getenv("PINECONE_ENVIRONMENT")
+PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX_NAME")
+
+if not all([PINECONE_API_KEY, PINECONE_ENVIRONMENT, PINECONE_INDEX_NAME]):
+    raise ValueError("Pinecone environment variables are required")
+
+EMBEDDING_MODEL = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+
+# Initialize Pinecone client and vector store
+pc = Pinecone(api_key=PINECONE_API_KEY)
+
+# Use existing index
+try:
+    VECTOR_STORE = PineconeVectorStore(
+        index_name=PINECONE_INDEX_NAME,
+        embedding=EMBEDDING_MODEL
+    )
+except Exception as e:
+    raise RuntimeError(f"Failed to connect to Pinecone index: {e}")
+# --- END NEW PINECONE CONFIGURATION ---
 
 # New: environment-driven configuration
 GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
@@ -93,6 +122,7 @@ class GeneratedSolution(BaseModel):
 
 class GenerateTextBody(BaseModel):
     text: str
+    method: Optional[str] = "knowledgeBase"  # 'knowledgeBase' or 'llmOnly'
 
 # Document extraction functions
 def extract_text_from_pdf(file_path: str) -> str:
@@ -266,13 +296,35 @@ def render_mermaid_to_image(mermaid_code: str) -> str:
     return image_path
 
 # LLM Processing
-async def analyze_rfp_with_groq(rfp_text: str) -> GeneratedSolution:
+async def analyze_rfp_with_groq(rfp_text: str,use_rag: bool = True) -> GeneratedSolution:
     """Analyze RFP text using Groq and generate solution"""
+
+    #step1: Retrieve relevant documents from vector store
+    retrieved_docs = []
+    if use_rag:
+        try:
+            retrieved_docs = VECTOR_STORE.similarity_search(rfp_text, k=5)
+        except Exception as e:
+            print(f"Error retrieving from vector store: {str(e)}")
+            retrieved_docs = []
+
+    print("--- Retrieved Chunks for Validation ---")
+    if not retrieved_docs:
+        print("No relevant chunks found in the vector store.")
+    for i, doc in enumerate(retrieved_docs):
+        print(f"Chunk {i+1}:")
+        print(doc.page_content)
+        print(f"Source file: {doc.metadata.get('filename', 'N/A')}")
+        print("-" * 50)
+
+    context_text = "\n\n".join([doc.page_content for doc in retrieved_docs]) if retrieved_docs else "No relevant references found."
     
+    #step2: build prompt with references
     prompt = f"""
     You are an expert technical consultant specializing in creating detailed technical proposals for RFPs. Try to identify the field/domain of the RFP and tailor the solution accordingly. 
     While drafting the solution, ensure to incorporate the domain knowledge, and include proper jargoan.
-    
+    Use the uploaded reference solutions (if relevant) as inspiration, but adapt to the new RFP.
+
     Based on the following RFP document, generate a comprehensive technical proposal that follows this structure:
     
     1. Title
@@ -298,6 +350,9 @@ async def analyze_rfp_with_groq(rfp_text: str) -> GeneratedSolution:
     
     RFP Content:
     {rfp_text[:8000]}
+
+    Reference Solutions ( from previous uploads):
+    {context_text[:6000]}
     
     The JSON structure must be exactly:
     {{
@@ -326,7 +381,7 @@ async def analyze_rfp_with_groq(rfp_text: str) -> GeneratedSolution:
         ]
     }}
     """
-    
+    #step3: call groq LLM as before
     try:
         response = groq_client.chat.completions.create(
             model=GROQ_MODEL,
@@ -631,7 +686,7 @@ def create_word_document(solution: GeneratedSolution) -> str:
 
 # API Endpoints
 @app.post("/api/generate-solution", response_model=GeneratedSolution)
-async def generate_solution(file: UploadFile = File(...)):
+async def generate_solution(file: UploadFile = File(...),method: str = "knowledgeBase"):
     """Generate solution from uploaded RFP document"""
     
     # Validate file type (PDF and DOCX only)
@@ -673,7 +728,10 @@ async def generate_solution(file: UploadFile = File(...)):
             raise HTTPException(status_code=400, detail="No text content found in the document")
         
         # Generate solution using Groq
-        solution = await analyze_rfp_with_groq(rfp_text)
+        if method == "llmOnly":
+            solution = await analyze_rfp_with_groq(rfp_text,use_rag=False)
+        else:
+            solution = await analyze_rfp_with_groq(rfp_text,use_rag=True)
         
         return solution
         
@@ -696,7 +754,7 @@ async def generate_solution_text(body: GenerateTextBody):
     if not rfp_text:
         raise HTTPException(status_code=400, detail="Text is required")
     try:
-        solution = await analyze_rfp_with_groq(rfp_text)
+        solution = await analyze_rfp_with_groq(rfp_text, use_rag=(body.method != "llmOnly"))
         return solution
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error generating from text: {str(e)}")
