@@ -10,9 +10,10 @@ export default function GeneratedSolutions({ onClose }) {
     fetchSolutions();
   }, []);
 
-  const fetchSolutions = async () => {
+   const fetchSolutions = async () => {
     try {
-      const response = await fetch('/api/solutions');
+      const email = (() => { try { return sessionStorage.getItem('aionos_user_email') || ''; } catch (e) { return ''; } })();
+      const response = await fetch('/api/solutions', { headers: { 'X-User-Email': email }});
       if (!response.ok) {
         throw new Error('Failed to fetch solutions');
       }
@@ -25,9 +26,10 @@ export default function GeneratedSolutions({ onClose }) {
     }
   };
 
-  const downloadSolution = async (id, title) => {
+   const downloadSolution = async (id, title) => {
     try {
-      const response = await fetch(`/api/solutions/${id}`);
+      const email = (() => { try { return sessionStorage.getItem('aionos_user_email') || ''; } catch (e) { return ''; } })();
+      const response = await fetch(`/api/solutions/${id}`, { headers: { 'X-User-Email': email }});
       if (!response.ok) {
         throw new Error('Failed to download solution');
       }
