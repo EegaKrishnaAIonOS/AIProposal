@@ -8,7 +8,7 @@ export default function UploadSolutionModal({ onClose }) {
 	const [error, setError] = useState(null);
 	const [loading, setLoading] = useState(true);
 
-	const USER_ID = 'demo-user'; // TODO: replace with real auth identity
+	const USER_ID = (() => { try { return sessionStorage.getItem('aionos_user_email') || 'anonymous'; } catch (e) { return 'anonymous'; } })()
 
 	useEffect(() => {
 		fetchList();

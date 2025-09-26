@@ -17,6 +17,7 @@ class Solution(Base):
     id = Column(Integer, primary_key=True, index=True)
     title = Column(String, index=True)
     generated_date = Column(DateTime, default=datetime.utcnow)
+    user_id = Column(String, index=True)
     file_path = Column(String)
 
 
@@ -35,7 +36,17 @@ Base.metadata.create_all(bind=engine)
 # add it (SQLite supports ALTER TABLE ... ADD COLUMN).
 try:
     with engine.begin() as conn:
-        tbl = conn.execute(text("SELECT name FROM sqlite_master WHERE type='table' AND name='uploaded_solutions'")).fetchone()
+        # Ensure user_id column exists on solutions
+        try:
+            cols = conn.execute(text("PRAGMA table_info('solutions')")).fetchall()
+            col_names = [c[1] for c in cols]
+            if 'user_id' not in col_names:
+                conn.execute(text("ALTER TABLE solutions ADD COLUMN user_id VARCHAR"))
+        except Exception:
+            pass
+
+        tbl = conn.execute(text("SELECT name FROM sqlite_master WHERE type='table' AND name='uploaded_solutions'"))
+        tbl = getattr(tbl, 'fetchone', lambda: None)()        
         if tbl:
             cols = conn.execute(text("PRAGMA table_info('uploaded_solutions')")).fetchall()
             col_names = [c[1] for c in cols]

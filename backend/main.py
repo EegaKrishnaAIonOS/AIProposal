@@ -1,4 +1,4 @@
-from fastapi import FastAPI, File, UploadFile, HTTPException, Depends
+from fastapi import FastAPI, File, UploadFile, HTTPException, Depends, Header
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -760,7 +760,7 @@ async def generate_solution_text(body: GenerateTextBody):
         raise HTTPException(status_code=500, detail=f"Error generating from text: {str(e)}")
 
 @app.post("/api/solutions")
-async def save_solution(solution: GeneratedSolution, db: Session = Depends(get_db)):
+async def save_solution(solution: GeneratedSolution, x_user_email: Optional[str] = Header(None), db: Session = Depends(get_db)):
     """Save a generated solution to the database and filesystem"""
     try:
         # Create Word document and save to generated_solutions folder
@@ -778,7 +778,8 @@ async def save_solution(solution: GeneratedSolution, db: Session = Depends(get_d
         # Save to database
         solution_record = DBSolution(
             title=solution.title,
-            file_path=doc_path
+            file_path=doc_path,
+            user_id=(x_user_email or "anonymous")
         )
         db.add(solution_record)
         db.commit()
@@ -817,9 +818,31 @@ async def get_company_logo():
     return FileResponse(logo_path, media_type='image/png', filename='AIONOS_logo.png')
 
 @app.get("/api/solutions")
-async def get_solutions(db: Session = Depends(get_db)):
-    """Get list of all generated solutions"""
-    solutions = db.query(DBSolution).order_by(DBSolution.generated_date.desc()).all()
+async def get_solutions(x_user_email: Optional[str] = Header(None), db: Session = Depends(get_db)):
+    """Get list of generated solutions visible to the requester.
+    Admin: sees only Admin-generated.
+    Manager: sees Manager-generated and Admin-generated.
+    Others: sees only their own if header provided; otherwise none.
+    """
+    requester = (x_user_email or "").strip()
+    if not requester:
+        solutions = []
+    else:
+        if requester.lower() == "manager@gmail.com":
+            solutions = (
+                db.query(DBSolution)
+                .filter(DBSolution.user_id.in_(["Manager@gmail.com", "Admin@gmail.com"]))
+                .order_by(DBSolution.generated_date.desc())
+                .all()
+            )
+        else:
+            # default and Admin path: only own
+            solutions = (
+                db.query(DBSolution)
+                .filter(DBSolution.user_id == requester)
+                .order_by(DBSolution.generated_date.desc())
+                .all()
+            )
     return [
         {
             "id": solution.id,
@@ -829,18 +852,29 @@ async def get_solutions(db: Session = Depends(get_db)):
         }
         for solution in solutions
     ]
-
+ 
 @app.get("/api/solutions/{solution_id}")
-async def get_solution(solution_id: int, db: Session = Depends(get_db)):
-    """Get a specific solution by ID"""
+async def get_solution(solution_id: int, x_user_email: Optional[str] = Header(None), db: Session = Depends(get_db)):
+    """Get a specific solution by ID if requester has access."""
     solution = db.query(DBSolution).filter(DBSolution.id == solution_id).first()
     if not solution:
         raise HTTPException(status_code=404, detail="Solution not found")
-    
+    requester = (x_user_email or "").strip()
+    if not requester:
+        raise HTTPException(status_code=403, detail="Unauthorized")
+    # Access control: Admin -> only Admin's; Manager -> Admin or Manager; Others -> only own
+    allowed = False
+    if requester.lower() == "manager@gmail.com":
+        allowed = solution.user_id in ("Manager@gmail.com", "Admin@gmail.com")
+    else:
+        allowed = solution.user_id == requester
+    if not allowed:
+        raise HTTPException(status_code=403, detail="Forbidden")
+   
     file_path = solution.file_path
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="Solution file not found")
-    
+   
     return FileResponse(
         file_path,
         media_type='application/vnd.openxmlformats-officedocument.wordprocessingml.document',

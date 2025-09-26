@@ -5,9 +5,11 @@ import { FaEye, FaEyeSlash } from "react-icons/fa";
  
 import LOGO_PATH from "../assets/AIONOS_logo.png";
  
-const VALID_EMAIL = "Admin@gmail.com";
-const VALID_PASSWORD = "Admin@123";
- 
+const VALID_CREDENTIALS = [
+  { email: "Admin@gmail.com", password: "Admin@123", role: "admin" },
+  { email: "Manager@gmail.com", password: "Manager@123", role: "manager" }
+];
+
 function Login({ onAuth }) {
   const navigate = useNavigate();
   // Capture optional next target from query string so CTA returns post-login
@@ -43,15 +45,20 @@ function Login({ onAuth }) {
   const [vibrate, setVibrate] = useState(false);
   const timeoutRef = useRef(null);
  
-  const handleSubmit = (e) => {
+ const handleSubmit = (e) => {
     e.preventDefault();
-      if (email === VALID_EMAIL && password === VALID_PASSWORD) {
+    const match = VALID_CREDENTIALS.find(c => c.email === email && c.password === password);
+    if (match) {
       setError("");
       // Persist a simple session flag so auth survives refresh in this demo
-      try { sessionStorage.setItem('aionos_auth', '1'); } catch (err) { /* ignore */ }
+      try {
+        sessionStorage.setItem('aionos_auth', '1');
+        sessionStorage.setItem('aionos_user_email', match.email);
+        sessionStorage.setItem('aionos_user_role', match.role);
+      } catch (err) { /* ignore */ }
       if (typeof onAuth === 'function') onAuth();
-      // Redirect to the RFP Solution Generator page (or next param) after login
-      navigate(next);
+      // Redirect to the RFP Solution Generator page after login
+      navigate("/rfp");
     } else {
       setError("Invalid Email or Password");
     }

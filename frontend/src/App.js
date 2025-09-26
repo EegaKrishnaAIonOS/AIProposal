@@ -77,18 +77,20 @@ const RFPSolutionGenerator = () => {
       setIsEditing(false);
 
       // Save generated solution to database
-      try {
+     try {
+        const email = (() => { try { return sessionStorage.getItem('aionos_user_email') || ''; } catch (e) { return ''; } })();
         await fetch('/api/solutions', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
+            'X-User-Email': email
           },
           body: JSON.stringify(data),
         });
       } catch (saveError) {
         console.error('Failed to save solution:', saveError);
       }
-
+ 
     } catch (err) {
       setError(err.message);
     } finally {
@@ -100,14 +102,16 @@ const RFPSolutionGenerator = () => {
     if (!solution) return;
 
     try {
+      const email = (() => { try { return sessionStorage.getItem('aionos_user_email') || ''; } catch (e) { return ''; } })();
       const response = await fetch('/api/download-solution', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          'X-User-Email': email
         },
         body: JSON.stringify(solution),
       });
-
+      
       if (!response.ok) {
         let msg = 'Failed to download solution';
         try { const j = await response.json(); if (j?.detail) msg = j.detail; } catch {}
@@ -169,9 +173,12 @@ const RFPSolutionGenerator = () => {
                   <Upload className="h-4 w-4" />
                   Upload Solution
                 </button>
-                <div className="text-sm text-gray-500">
-                  Professional Proposal Automation
-                </div>
+                <button
+                  onClick={() => {}} // Static, no functionality
+                  className="flex items-center gap-2 bg-gray-100 hover:bg-gray-200 px-4 py-2 rounded-md text-sm font-medium text-gray-700"
+                >
+                  Aionos Salary Information
+                </button>
               </div>
               <button onClick={() => setShowLogoutModal(true)} className="flex items-center gap-2 bg-red-500 hover:bg-red-600 px-4 py-2 rounded-md text-sm font-medium text-white">Logout </button>
             </div>
