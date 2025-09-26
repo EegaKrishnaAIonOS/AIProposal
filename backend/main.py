@@ -124,6 +124,19 @@ class GenerateTextBody(BaseModel):
     text: str
     method: Optional[str] = "knowledgeBase"  # 'knowledgeBase' or 'llmOnly'
 
+class ProductRecommendation(BaseModel):
+    name: str
+    description: str
+    url: str
+    score: float
+ 
+class RecommendBody(BaseModel):
+    text: str
+ 
+class SolutionWithRecommendations(BaseModel):
+    solution: GeneratedSolution
+    recommendations: List[ProductRecommendation] = []
+
 # Document extraction functions
 def extract_text_from_pdf(file_path: str) -> str:
     """Extract text from PDF file"""
@@ -157,6 +170,110 @@ def _get_logo_path() -> str:
     logo_path = os.path.join(project_root, 'AIONOS_logo.png')
     return logo_path
 
+# --- AionOS Product Catalog & Lightweight Matcher ---
+_AIONOS_PRODUCTS = [
+    {
+        "name": "IntelliMate\u2122",
+        "description": (
+            "IntelliMate\u2122 unifies NLP, computer vision, generative AI, predictive analytics into a single enterprise platform to orchestrate autonomous AI agents, integrate with legacy systems, improve operations and cybersecurity."
+        ),
+        "url": "https://aionos.io/intellimate",
+        "keywords": [
+            "unified ai platform","integration","legacy systems","agents","decision-making","efficiency","cybersecurity","enterprise","observability","operations"
+        ],
+    },
+    {
+        "name": "IntelliConverse",
+        "description": (
+            "Voice AI platform for multi-lingual conversational experiences across channels; automates customer interactions by connecting dialogues to backend systems and understanding complex intents."
+        ),
+        "url": "https://aionos.io/products/intelliconverse",
+        "keywords": [
+            "voice ai","multilingual","multi-lingual","chatbot","contact center","customer support","omnichannel","dialog","intent","automation"
+        ],
+    },
+    {
+        "name": "IntelliReach",
+        "description": (
+            "AI-powered marketing suite for campaign optimization, audience segmentation, personalized interactions, and analytics-driven performance insights to improve ROI."
+        ),
+        "url": "https://aionos.io/products/intelliconverse",
+        "keywords": [
+            "marketing","campaign","roi","personalization","audience segmentation","analytics","engagement","distribution","effectiveness"
+        ],
+    },
+    {
+        "name": "IntelliWorkflow",
+        "description": (
+            "Automates and orchestrates repetitive business tasks across departments, reducing manual processing and errors, integrating with existing workflows for operational efficiency."
+        ),
+        "url": "https://aionos.io/products/intelliworkflow",
+        "keywords": [
+            "workflow","automation","rpa","orchestration","repetitive tasks","manual","errors","process","efficiency","scale"
+        ],
+    },
+    {
+        "name": "IntelliResilience",
+        "description": (
+            "Autonomous AI-driven platform for business continuity, risk management, and rapid recovery with predictive risk assessment, real-time monitoring, and adaptive recovery strategies."
+        ),
+        "url": "https://aionos.io/products/intelliresilience",
+        "keywords": [
+            "resilience","business continuity","disaster recovery","outage","cyberattack","downtime","risk","recovery","compliance","incident response"
+        ],
+    },
+    {
+        "name": "IntelliPulse",
+        "description": (
+            "Advanced feedback and survey automation platform to collect, analyze, and act on insights; intelligent surveys and analytics uncover patterns in unstructured feedback."
+        ),
+        "url": "https://aionos.io/products/intellivision",
+        "keywords": [
+            "survey","feedback","insights","completion rate","nps","employee","customer","voice of customer","questionnaire","analytics"
+        ],
+    },
+]
+ 
+_STOPWORDS = set([
+    "the","and","of","to","a","in","for","on","is","with","by","as","at","from","or","an","be","that","this","it","are","our","we","your","their","into","across","over","after","within","without"
+])
+ 
+def _tokenize(text: str) -> List[str]:
+    cleaned = ''.join([c.lower() if (c.isalnum() or c.isspace()) else ' ' for c in (text or "")])
+    return [t for t in cleaned.split() if t and t not in _STOPWORDS]
+ 
+def _similarity(a: str, b: str) -> float:
+    # Jaccard similarity over token sets as a lightweight proxy for semantic match
+    a_set = set(_tokenize(a))
+    b_set = set(_tokenize(b))
+    if not a_set or not b_set:
+        return 0.0
+    inter = len(a_set & b_set)
+    union = len(a_set | b_set)
+    return inter / union if union else 0.0
+ 
+def find_product_recommendations(problem_statement: str, threshold: float = 0.30) -> List[ProductRecommendation]:
+    recs: List[ProductRecommendation] = []
+    for p in _AIONOS_PRODUCTS:
+        # base similarity on full description
+        base_score = _similarity(problem_statement, p["description"]) if problem_statement else 0.0
+        # lightweight keyword boost
+        boost = 0.0
+        kw_matches =0
+        if problem_statement and p.get("keywords"):
+            ps_lower = (problem_statement or "").lower()
+            kw_matches = sum (1 for kw in p["keywords"] if kw in ps_lower)
+            if kw_matches:
+                # Normalize by keyword count; cap boost weight to avoid overpowering base score
+                boost = min(1.0, kw_matches / max(3, len(p["keywords"])) ) * 0.8  # up to +0.8
+        score = min(1.0, 0.6 * base_score + boost)
+        # Guarantee a minimal score if at least one keyword matches
+        if kw_matches >= 1:
+            score = max(score, 0.35)
+        if score >= threshold:
+            recs.append(ProductRecommendation(name=p["name"], description=p["description"], url=p["url"], score=round(float(score), 2)))
+    recs.sort(key=lambda r: r.score, reverse=True)
+    return recs
 # Utility: add Page X of Y footer using field codes
 
 def _add_page_number_footer(doc: Document) -> None:
@@ -685,7 +802,7 @@ def create_word_document(solution: GeneratedSolution) -> str:
     return doc_path
 
 # API Endpoints
-@app.post("/api/generate-solution", response_model=GeneratedSolution)
+@app.post("/api/generate-solution", response_model=SolutionWithRecommendations)
 async def generate_solution(file: UploadFile = File(...),method: str = "knowledgeBase"):
     """Generate solution from uploaded RFP document"""
     
@@ -733,8 +850,9 @@ async def generate_solution(file: UploadFile = File(...),method: str = "knowledg
         else:
             solution = await analyze_rfp_with_groq(rfp_text,use_rag=True)
         
-        return solution
-        
+        recs = find_product_recommendations(solution.problem_statement, threshold=0.20)
+        return SolutionWithRecommendations(solution=solution, recommendations=recs)
+    
     except HTTPException:
         raise
     except Exception as e:
@@ -747,7 +865,7 @@ async def generate_solution(file: UploadFile = File(...),method: str = "knowledg
             except Exception:
                 pass
 
-@app.post("/api/generate-solution-text", response_model=GeneratedSolution)
+@app.post("/api/generate-solution-text", response_model=SolutionWithRecommendations)
 async def generate_solution_text(body: GenerateTextBody):
     """Generate solution directly from a raw problem statement / use case text."""
     rfp_text = (body.text or "").strip()
@@ -755,9 +873,16 @@ async def generate_solution_text(body: GenerateTextBody):
         raise HTTPException(status_code=400, detail="Text is required")
     try:
         solution = await analyze_rfp_with_groq(rfp_text, use_rag=(body.method != "llmOnly"))
-        return solution
+        recs = find_product_recommendations(solution.problem_statement, threshold=0.20)
+        return SolutionWithRecommendations(solution=solution, recommendations=recs)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error generating from text: {str(e)}")
+@app.post("/api/recommendations", response_model=List[ProductRecommendation])
+async def get_recommendations(body: RecommendBody):
+    text = (body.text or "").strip()
+    if not text:
+        return []
+    return find_product_recommendations(text, threshold=0.20)
 
 @app.post("/api/solutions")
 async def save_solution(solution: GeneratedSolution, x_user_email: Optional[str] = Header(None), db: Session = Depends(get_db)):
