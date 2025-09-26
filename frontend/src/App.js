@@ -30,6 +30,7 @@ const RFPSolutionGenerator = () => {
   const [showSolutions, setShowSolutions] = useState(false);
   const [showUpload, setShowUpload] = useState(false);
   const [showLogoutModal,setShowLogoutModal]=useState(false);
+  const [recommendations, setRecommendations] = useState([]);
   const [generationMethod, setGenerationMethod] = useState('knowledgeBase'); // 'knowledgeBase' or 'llmOnly'
   const navigate = useNavigate();
 
@@ -73,7 +74,36 @@ const RFPSolutionGenerator = () => {
         }
         data = await response.json();
       }
-      setSolution(data);
+      // Adjust for new shape: { solution, recommendations }
+      const generated = data?.solution ? data.solution : data;
+      const recs = Array.isArray(data?.recommendations) ? data.recommendations : [];
+      setSolution(generated);
+      // Trigger product recommendations using problem statement
+      try {
+        // If backend already sent recommendations, use them; otherwise fall back to calling endpoint
+        if (recs.length > 0) {
+          setRecommendations(recs);
+        } else {
+          const textToCheck = (generated?.problem_statement) || inputText;
+          if (textToCheck && textToCheck.trim()) {
+            const recRes = await fetch('/api/recommendations', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ text: textToCheck.trim() })
+            });
+            if (recRes.ok) {
+              const recs2 = await recRes.json();
+              setRecommendations(Array.isArray(recs2) ? recs2 : []);
+            } else {
+              setRecommendations([]);
+            }
+          } else {
+            setRecommendations([]);
+          }
+        }
+      } catch (e) {
+        setRecommendations([]);
+      }
       setIsEditing(false);
 
       // Save generated solution to database
@@ -85,7 +115,7 @@ const RFPSolutionGenerator = () => {
             'Content-Type': 'application/json',
             'X-User-Email': email
           },
-          body: JSON.stringify(data),
+          body: JSON.stringify(generated),
         });
       } catch (saveError) {
         console.error('Failed to save solution:', saveError);
@@ -363,6 +393,32 @@ const RFPSolutionGenerator = () => {
       {/* Generated Solutions Modal */}
       {showSolutions && (
         <GeneratedSolutions onClose={() => setShowSolutions(false)} />
+      )}
+      {/* Recommendation Pop-up */}
+      {Array.isArray(recommendations) && recommendations.length > 0 && (
+        <div className="fixed bottom-6 right-6 z-50 max-w-sm w-full bg-white shadow-lg border border-gray-200 rounded-lg p-4">
+          <div className="flex items-start justify-between">
+            <div>
+              <h4 className="text-sm font-semibold text-gray-900">Recommended AionOS Solution{recommendations.length>1?'s':''}</h4>
+              <p className="text-xs text-gray-500 mt-1">Based on the problem statement</p>
+            </div>
+            <button onClick={() => setRecommendations([])} className="text-gray-400 hover:text-gray-600">×</button>
+          </div>
+          <div className="mt-3 space-y-3 max-h-64 overflow-y-auto pr-1">
+            {recommendations.map((r, idx) => (
+              <div key={idx} className="border border-gray-100 rounded p-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-medium text-gray-800">{r.name}</span>
+                  {typeof r.score === 'number' && <span className="text-[10px] text-gray-500">Match {Math.round(r.score*100)}%</span>}
+                </div>
+                <p className="text-xs text-gray-600 mt-1">{r.description}</p>
+                {r.url && (
+                  <a href={r.url} target="_blank" rel="noreferrer" className="inline-block mt-2 text-xs text-blue-600 hover:underline">Learn more</a>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
       )}
       {showUpload && (
         <UploadSolutionModal onClose={() => setShowUpload(false)} />
