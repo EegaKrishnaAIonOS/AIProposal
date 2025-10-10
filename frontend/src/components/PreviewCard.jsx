@@ -1,10 +1,10 @@
-import React, { useState } from 'react';
+import React, { useState,useRef,useImperativeHandle,forwardRef } from 'react';
 import { ChevronDown, ChevronRight, FileText, Plus, X } from 'lucide-react';
 
-function Section({ title, children, defaultOpen = true }) {
+function Section({ title, children, defaultOpen = true, innerRef }) {
   const [open, setOpen] = useState(defaultOpen);
   return (
-    <div className="border border-gray-200 rounded-lg mb-4">
+    <div ref = {innerRef} className="border border-gray-200 rounded-lg mb-4 transition-colors duration-500">
       <button onClick={() => setOpen(!open)} className="w-full flex items-center justify-between p-4">
         <h3 className="text-lg font-semibold text-gray-900">{title}</h3>
         {open ? <ChevronDown className="h-5 w-5 text-gray-500"/> : <ChevronRight className="h-5 w-5 text-gray-500"/>}
@@ -14,7 +14,37 @@ function Section({ title, children, defaultOpen = true }) {
   );
 }
 
-export default function PreviewCard({ solution, editable = false, onChange }) {
+const PreviewCard = forwardRef(({ solution, editable = false, onChange }, ref) => {
+
+  // Refs for chatbot navigation
+  const sectionRefs = {
+    'problem-statement': useRef(null),
+    'key-challenges': useRef(null),
+    'solution-approach': useRef(null),
+    'architecture-diagram': useRef(null),
+    'milestones': useRef(null),
+    'technical-stack': useRef(null),
+    'objectives': useRef(null),
+    'acceptance-criteria': useRef(null),
+    'resources': useRef(null),
+    'cost-analysis': useRef(null),
+    'key-performance-indicators': useRef(null),
+  };
+
+  // Expose scroll method to parent (App.js)
+  useImperativeHandle(ref, () => ({
+    scrollToSection: (sectionId) => {
+      const section = sectionRefs[sectionId];
+      if (section && section.current) {
+        section.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        section.current.classList.add('bg-yellow-100');
+        setTimeout(() => {
+          section.current.classList.remove('bg-yellow-100');
+        }, 1500);
+      }
+    },
+  }));
+
   if (!solution) {
     return (
       <div className="text-center py-12">
@@ -152,7 +182,7 @@ export default function PreviewCard({ solution, editable = false, onChange }) {
 
       <div className="border-t border-gray-200 my-4"></div>
 
-      <Section title="Problem Statement">
+      <Section title="Problem Statement" innerRef={sectionRefs['problem-statement']}>
         {editable ? (
           <textarea
             className="w-full bg-blue-50 p-4 rounded-lg text-gray-700 border border-blue-100 focus:outline-none focus:ring"
@@ -168,7 +198,7 @@ export default function PreviewCard({ solution, editable = false, onChange }) {
       </Section>
 
       {solution.key_challenges?.length > 0 && (
-        <Section title="Key Challenges">
+        <Section title="Key Challenges" innerRef={sectionRefs['key-challenges']}>
           {editable ? (
             <div className="space-y-2">
               {solution.key_challenges.map((challenge, idx) => (
@@ -242,7 +272,7 @@ export default function PreviewCard({ solution, editable = false, onChange }) {
       )}
 
       {solution.architecture_diagram && (
-        <Section title="Architecture Diagram">
+        <Section title="Architecture Diagram" innerRef={sectionRefs['architecture-diagram']}>
           <div className="border border-gray-200 rounded-lg p-4">
             {editable ? (
               <textarea
@@ -331,7 +361,7 @@ export default function PreviewCard({ solution, editable = false, onChange }) {
       )}
 
       {solution.objectives?.length > 0 && (
-        <Section title="Objectives">
+        <Section title="Objectives" innerRef={sectionRefs['objectives']}>
           {editable ? (
             <div className="space-y-2">
               {solution.objectives.map((o, i) => (
@@ -379,7 +409,7 @@ export default function PreviewCard({ solution, editable = false, onChange }) {
       )}
 
       {solution.resources?.length > 0 && (
-        <Section title="Resources">
+        <Section title="Resources" innerRef={sectionRefs['resources']}>
           {editable ? (
             <div className="space-y-3">
               {solution.resources.map((r, i) => (
@@ -425,7 +455,7 @@ export default function PreviewCard({ solution, editable = false, onChange }) {
       )}
 
       {solution.cost_analysis?.length > 0 && (
-        <Section title="Cost Analysis">
+        <Section title="Cost Analysis" innerRef={sectionRefs['cost-analysis']}>
           {editable ? (
             <div className="space-y-3">
               {solution.cost_analysis.map((c, i) => (
@@ -469,7 +499,7 @@ export default function PreviewCard({ solution, editable = false, onChange }) {
 
       {/* Key Performance Indicators */}
       {solution.key_performance_indicators?.length > 0 && (
-        <Section title="Key Performance Indicators">
+        <Section title="Key Performance Indicators" innerRef={sectionRefs['key-performance-indicators']}>
           {editable ? (
             <div className="space-y-3">
               {solution.key_performance_indicators.map((kpi, i) => (
@@ -535,4 +565,5 @@ export default function PreviewCard({ solution, editable = false, onChange }) {
       )}
     </div>
   );
-} 
+});
+export default PreviewCard;
