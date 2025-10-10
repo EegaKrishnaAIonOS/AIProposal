@@ -1,4 +1,4 @@
-import React, {useState, useEffect} from 'react';
+import React, {useState, useEffect,useRef} from 'react';
 import {useNavigate} from 'react-router-dom';
 import { AlertCircle, Settings, History, Upload } from 'lucide-react';
 import FileUploader from './components/FileUploader.jsx';
@@ -10,6 +10,7 @@ import {BrowserRouter as Router, Route, Routes, Navigate, Outlet} from 'react-ro
 import Login from './pages/Login';
 import Home from './pages/Home';
 import Contact from './pages/Contact';
+import ChatBox from './components/ChatBox.jsx';
 
 // This new component handles the authentication check
 const ProtectedRoute = ({ authed, redirectPath = '/login' }) => {
@@ -33,6 +34,7 @@ const RFPSolutionGenerator = () => {
   const [recommendations, setRecommendations] = useState([]);
   const [generationMethod, setGenerationMethod] = useState('knowledgeBase'); // 'knowledgeBase' or 'llmOnly'
   const navigate = useNavigate();
+  const previewRef = useRef(null);
 
   const onFileSelected = (f) => {
     setFile(f);
@@ -175,6 +177,39 @@ const RFPSolutionGenerator = () => {
   const scrollToUpload = () => {
     const el = document.getElementById('upload-section');
     if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
+
+  // --- NEW REFS & SCROLL LOGIC ---
+  // Create a ref object for each potential section ID
+  const sectionRefs = useRef({}); 
+  
+  // Dynamic list of section names to create refs for
+  const sectionNames = [
+    'title', 'problem-statement', 'objectives', 'acceptance-criteria', 
+    'project-plan', 'resources', 'cost-analysis', 'architecture-diagram', 
+    'key-performance-indicators', 'disclaimer'
+  ];
+
+  // Initialize refs dynamically
+  useEffect(() => {
+    sectionNames.forEach(name => {
+      sectionRefs.current[name] = sectionRefs.current[name] || React.createRef();
+    });
+  }, [solution]); // Re-run if solution changes to ensure all refs are fresh
+
+  const handleScrollToSection = (sectionId) => {
+    const ref = sectionRefs.current[sectionId];
+    if (ref && ref.current) {
+      // Scroll smoothly to the element referenced by the key
+      ref.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      // Highlight effect
+      ref.current.classList.add('bg-yellow-100');
+      setTimeout(() => {
+        ref.current.classList.remove('bg-yellow-100');
+      }, 2000);
+    } else {
+      console.warn(`Section ref not found for ID: ${sectionId}`);
+    }
   };
 
   return (
@@ -342,7 +377,7 @@ const RFPSolutionGenerator = () => {
               )}
             </div>
 
-            {/* Process Steps */}
+            {/* Process Steps
             <div className="mt-6 bg-white rounded-lg shadow-sm border border-gray-200 p-6">
               <h3 className="text-lg font-semibold text-gray-900 mb-4">Process Steps</h3>
               <div className="space-y-3">
@@ -365,7 +400,7 @@ const RFPSolutionGenerator = () => {
                   <span className={downloaded ? 'text-green-600' : 'text-gray-500'}>Download & Customize</span>
                 </div>
               </div>
-            </div>
+            </div> */}
           </div>
 
           {/* Right Panel - Solution Preview */}
@@ -383,7 +418,7 @@ const RFPSolutionGenerator = () => {
                 )}
               </div>
               <div className="p-6">
-                <PreviewCard solution={solution} editable={isEditing} onChange={setSolution} />
+                <PreviewCard ref={previewRef} solution={solution} editable={isEditing} onChange={setSolution} />
               </div>
             </div>
           </div>
@@ -472,8 +507,12 @@ const RFPSolutionGenerator = () => {
           </div>
         </div>
       )}
+      <ChatBox 
+          solution={solution} 
+          onScrollToSection={(sectionId) => previewRef.current?.scrollToSection(sectionId)} 
+      />
     </div>
-  );
+  );  
 }
 
 function App() {

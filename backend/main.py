@@ -1,8 +1,11 @@
 from fastapi import FastAPI, File, UploadFile, HTTPException, Depends, Header
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
+import sys
+import warnings
+import sys
 import os, json, tempfile, shutil
 from datetime import datetime
 from sqlalchemy.orm import Session
@@ -16,6 +19,7 @@ from docx.shared import Inches, Pt
 from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_TAB_ALIGNMENT, WD_TAB_LEADER
 from docx.oxml.shared import OxmlElement, qn
 import requests,base64
+from fastapi import Request
 
 from pinecone import Pinecone
 from langchain_pinecone import PineconeVectorStore
@@ -34,6 +38,9 @@ app.include_router(upload_router)
 #     pass
 
 load_dotenv()
+
+# Suppress noisy third-party deprecation warnings from langchain_pinecone
+warnings.filterwarnings("ignore", category=DeprecationWarning, module="langchain_pinecone")
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 if not GROQ_API_KEY:
@@ -77,6 +84,32 @@ app.add_middleware(
 )
 
 groq_client = Groq(api_key=GROQ_API_KEY)
+
+# --- Logging helper to avoid Windows console encoding errors ---
+def _safe_to_console_text(value: object) -> str:
+    try:
+        return str(value)
+    except Exception:
+        return repr(value)
+
+def safe_print(*args, **kwargs) -> None:
+    try:
+        print(*args, **kwargs)
+    except UnicodeEncodeError:
+        enc = getattr(sys.stdout, "encoding", None) or "utf-8"
+        sanitized_args = []
+        for a in args:
+            try:
+                sanitized_args.append(_safe_to_console_text(a).encode(enc, errors="replace").decode(enc, errors="replace"))
+            except Exception:
+                sanitized_args.append(repr(a))
+        try:
+            print(*sanitized_args, **kwargs)
+        except Exception:
+            try:
+                sys.stdout.write(" ".join(sanitized_args) + "\n")
+            except Exception:
+                pass
 
 class SolutionStep(BaseModel):
     title:str
@@ -390,9 +423,9 @@ def _insert_toc(doc: Document) -> None:
     r3 = p.add_run(); r3._r.append(fld_char('separate'))
     r4 = p.add_run(); r4._r.append(fld_char('end'))
 
-def render_mermaid_to_image(mermaid_code: str) -> str:
+def render_mermaid_to_image(mermaid_code: str) -> str | None:
     """Render Mermaid code to a temporary PNG file using Kroki API."""
-    if not mermaid_code:
+    if not mermaid_code or not mermaid_code.strip():
         raise ValueError("No Mermaid code provided")
     
     payload = {
@@ -401,16 +434,23 @@ def render_mermaid_to_image(mermaid_code: str) -> str:
         "output_format": "png"
     }
     
-    response = requests.post("https://kroki.io", json=payload)
-    if response.status_code != 200:
-        raise Exception(f"Kroki API error: {response.text}")
-    
-    temp_dir = tempfile.gettempdir()
-    image_path = os.path.join(temp_dir, f'architecture_diagram_{datetime.now().strftime("%Y%m%d_%H%M%S")}.png')
-    with open(image_path, "wb") as f:
-        f.write(response.content)
-    
-    return image_path
+    try:
+        response = requests.post("https://kroki.io", json=payload, timeout=10)
+        if response.status_code == 200:
+            temp_dir = tempfile.gettempdir()
+            image_path = os.path.join(
+                temp_dir,
+                f'architecture_diagram_{datetime.now().strftime("%Y%m%d_%H%M%S")}.png'
+            )
+            with open(image_path, "wb") as f:
+                f.write(response.content)
+            return image_path
+        else:
+            safe_print(f"[WARN] Kroki API error {response.status_code}: {response.text[:100]}")
+            return None
+    except Exception as e:
+        safe_print(f"[WARN] Kroki rendering failed: {str(e)}")
+        return None
 
 # LLM Processing
 async def analyze_rfp_with_groq(rfp_text: str,use_rag: bool = True) -> GeneratedSolution:
@@ -422,17 +462,17 @@ async def analyze_rfp_with_groq(rfp_text: str,use_rag: bool = True) -> Generated
         try:
             retrieved_docs = VECTOR_STORE.similarity_search(rfp_text, k=5)
         except Exception as e:
-            print(f"Error retrieving from vector store: {str(e)}")
+            safe_print(f"Error retrieving from vector store: {str(e)}")
             retrieved_docs = []
 
-    print("--- Retrieved Chunks for Validation ---")
+    safe_print("--- Retrieved Chunks for Validation ---")
     if not retrieved_docs:
-        print("No relevant chunks found in the vector store.")
+        safe_print("No relevant chunks found in the vector store.")
     for i, doc in enumerate(retrieved_docs):
-        print(f"Chunk {i+1}:")
-        print(doc.page_content)
-        print(f"Source file: {doc.metadata.get('filename', 'N/A')}")
-        print("-" * 50)
+        safe_print(f"Chunk {i+1}:")
+        safe_print(doc.page_content)
+        safe_print(f"Source file: {doc.metadata.get('filename', 'N/A')}")
+        safe_print("-" * 50)
 
     context_text = "\n\n".join([doc.page_content for doc in retrieved_docs]) if retrieved_docs else "No relevant references found."
     
@@ -529,15 +569,22 @@ async def analyze_rfp_with_groq(rfp_text: str,use_rag: bool = True) -> Generated
 
         if solution_data.get("architecture_diagram"):
             image_path = render_mermaid_to_image(solution_data["architecture_diagram"])
-            with open(image_path, "rb") as image_file:
-                encoded_image = base64.b64encode(image_file.read()).decode('utf-8')
-                solution_data["architecture_diagram_image"] = f"data:image/png;base64,{encoded_image}"
-            os.remove(image_path)  # Cleanup
-
-        return GeneratedSolution(**solution_data)
+            if image_path and os.path.exists(image_path):
+                try:
+                    with open(image_path, "rb") as image_file:
+                        encoded_image = base64.b64encode(image_file.read()).decode("utf-8")
+                        solution_data["architecture_diagram_image"] = f"data:image/png;base64,{encoded_image}"
+                    os.remove(image_path)
+                except Exception as e:
+                    safe_print(f"[WARN] Error reading generated diagram: {e}")
+                    solution_data["architecture_diagram_image"] = None
+            else:
+                safe_print("[INFO] Kroki diagram generation failed; continuing without image.")
+                solution_data["architecture_diagram_image"] = None
+            return GeneratedSolution(**solution_data)
         
     except Exception as e:
-        print(f"Error with Groq API: {str(e)}")
+        safe_print(f"Error with Groq API: {str(e)}")
         # Fallback solution (INR costs; includes years_of_experience)
         return GeneratedSolution(
             title="Technical Solution Proposal",
@@ -692,15 +739,17 @@ def create_word_document(solution: GeneratedSolution) -> str:
     if solution.architecture_diagram:
         h = doc.add_heading('Architecture Diagram', level=1)
         bookmark_id = _add_bookmark(h, 'sec_architecture_diagram', bookmark_id)
-        try:
-            image_path = render_mermaid_to_image(solution.architecture_diagram)
-            doc.add_picture(image_path, width=Inches(6.0))
-            # Cleanup temp image
-            os.remove(image_path)
-        except Exception as e:
-            print(f"Error rendering diagram: {str(e)}")
+        image_path = render_mermaid_to_image(solution.architecture_diagram)
+        if image_path and os.path.exists(image_path):
+            try:
+                doc.add_picture(image_path, width=Inches(6.0))
+                os.remove(image_path)
+            except Exception as e:
+                safe_print(f"[WARN] Error adding diagram to document: {str(e)}")
+                doc.add_paragraph("Architecture Diagram (fallback textual description):\n" + solution.architecture_diagram)
+        else:
+            safe_print("[INFO] Kroki diagram not available — using fallback text.")
             doc.add_paragraph("Architecture Diagram (fallback textual description):\n" + solution.architecture_diagram)
-
     h = doc.add_heading('Technology Stack', level=1)
     _add_bookmark(h, 'sec_technical_stack', bookmark_id)
     for tech in solution.technical_stack:
@@ -856,6 +905,7 @@ async def generate_solution(file: UploadFile = File(...),method: str = "knowledg
     except HTTPException:
         raise
     except Exception as e:
+        safe_print(f"FATAL ERROR in /api/generate-solution: {e}") 
         raise HTTPException(status_code=500, detail=f"Error processing document: {str(e)}")
     finally:
         # Cleanup temporary file
@@ -876,6 +926,7 @@ async def generate_solution_text(body: GenerateTextBody):
         recs = find_product_recommendations(solution.problem_statement, threshold=0.20)
         return SolutionWithRecommendations(solution=solution, recommendations=recs)
     except Exception as e:
+        safe_print(f"FATAL ERROR in /api/generate-solution-text: {e}") 
         raise HTTPException(status_code=500, detail=f"Error generating from text: {str(e)}")
 @app.post("/api/recommendations", response_model=List[ProductRecommendation])
 async def get_recommendations(body: RecommendBody):
@@ -1006,6 +1057,83 @@ async def get_solution(solution_id: int, x_user_email: Optional[str] = Header(No
         filename=f'{solution.title}.docx'
     )
 
+@app.post("/api/chat")
+async def chat_with_groq(request: Request):
+    """
+    Basic Chatbot Agent for RFP App using Groq LLM.
+    Handles navigation commands (jump to section) and Q&A from generated solution.
+    """
+    try:
+        data = await request.json()
+        message = (data.get("message") or "").strip()
+        solution_title = data.get("solution_title")
+        solution_content = data.get("solution_content")
+
+        if not message:
+            return {"response":"Please enter a message.","action": None}
+        
+        sections = {
+            "problem statement": "problem-statement",
+            "key challenges": "key-challenges",
+            "solution approach": "solution-approach",
+            "architecture diagram": "architecture-diagram",
+            "milestones": "milestones",
+            "technical stack": "technical-stack",
+            "cost analysis": "cost-analysis",
+            "objectives": "objectives",
+            "acceptance criteria": "acceptance-criteria",
+            "resources": "resources",
+            "key performance indicators": "key-performance-indicators",
+        }
+
+        for key,sec_id in sections.items():
+            if key in message.lower():
+                if any(x in message.lower() for x in ["go to", "jump to", "show me", "take me to", "navigate to"]):
+                    return {
+                        "response": f"Navigating to {key} section.",
+                        "action": {"type": "jump_to", "section": sec_id}
+                    }
+                
+        # --- Filter out unrelated queries ---
+        allowed_keywords = [
+            "rfp", "proposal", "solution", "architecture", "cost", "objective",
+            "resource", "kpi", "problem", "criteria", "stack", "milestone", "technology", "hi", "hello", "how are you"
+        ]
+
+        if not any(kw in message for kw in allowed_keywords):
+            return {
+                "response": "I can only answer proposal-related questions. Please ask about your generated solution or proposal content.",
+                "action": None
+            }
+                
+        prompt = f"""
+        You are a friendly AI assistant integrated into an RFP Solution Generator app.
+        - If the user asks about navigation, reply with a short message.
+        - If the user asks about technical content, use the given solution JSON for context.
+        - Be concise and relevant.
+
+        Solution Content(if Avaliable):
+        Title: {solution_title or 'N/A'}
+        Content: {solution_content or 'No solution yet.'}
+
+        User Question:
+        {message}
+        """
+        response = groq_client.chat.completions.create(
+            model=GROQ_MODEL,
+            messages=[
+                {"role": "system", "content": "You are a helpful assistant for technical RFP proposal app"},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.4,
+            max_tokens=300
+        )
+        answer = response.choices[0].message.content.strip()
+        return {"response": answer, "action": None}
+    except Exception as e:
+        safe_print("Chat API Error:", str(e))
+        return {"response": "Sorry, something went wrong while generating a reply.", "action": None}
+    
 @app.get("/api/health")
 async def health_check():
     """Health check endpoint"""
