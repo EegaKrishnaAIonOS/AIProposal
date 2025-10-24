@@ -57,8 +57,8 @@ function Login({ onAuth }) {
         sessionStorage.setItem('aionos_user_role', match.role);
       } catch (err) { /* ignore */ }
       if (typeof onAuth === 'function') onAuth();
-      // Redirect to the RFP Solution Generator page after login
-      navigate("/rfp");
+      // Redirect to dashboard after login
+      navigate("/dashboard");
     } else {
       setError("Invalid Email or Password");
     }

@@ -1,6 +1,6 @@
 import React, {useState, useEffect,useRef} from 'react';
 import {useNavigate} from 'react-router-dom';
-import { AlertCircle, Settings, History, Upload } from 'lucide-react';
+import { AlertCircle, Settings, History, Upload, Building2 } from 'lucide-react';
 import FileUploader from './components/FileUploader.jsx';
 import ActionButtons from './components/ActionButtons.jsx';
 import PreviewCard from './components/PreviewCard.jsx';
@@ -8,6 +8,9 @@ import GeneratedSolutions from './components/GeneratedSolutions.jsx';
 import UploadSolutionModal from './components/UploadSolutionModal.jsx';
 import {BrowserRouter as Router, Route, Routes, Navigate, Outlet} from 'react-router-dom';
 import Login from './pages/Login';
+import Dashboard from './pages/Dashboard';
+import ActiveTenders from './pages/ActiveTenders';
+import Wishlist from './pages/Wishlist';
 import Home from './pages/Home';
 import Contact from './pages/Contact';
 import ChatBox from './components/ChatBox.jsx';
@@ -258,9 +261,18 @@ const RFPSolutionGenerator = () => {
             <div>
               <h2 className="text-3xl font-bold text-gray-900 mb-3">Generate Professional Proposals from RFPs</h2>
               <p className="text-gray-600 mb-6">Upload your PDF or DOCX RFP and instantly get a structured, client-ready technical proposal powered by AI.</p>
-              <button onClick={scrollToUpload} className="bg-blue-600 text-white py-2 px-5 rounded-md hover:bg-blue-700">
-                Upload RFP and Generate Proposal
-              </button>
+              <div className="flex flex-wrap gap-3">
+                <button onClick={scrollToUpload} className="bg-blue-600 text-white py-2 px-5 rounded-md hover:bg-blue-700">
+                  Upload RFP and Generate Proposal
+                </button>
+                <button 
+                  onClick={() => navigate('/tenders')} 
+                  className="bg-purple-600 text-white py-2 px-5 rounded-md hover:bg-purple-700 flex items-center gap-2"
+                >
+                  <Building2 size={18}/>
+                  Browse Tenders
+                </button>
+              </div>
             </div>
             <div className="hidden md:block">
               <div className="bg-white border border-gray-200 rounded-lg p-4 shadow-sm">
@@ -549,7 +561,10 @@ function App() {
         <Route path="/logout" element={<Navigate to="/" replace />} />
         <Route path="/" element={<Home />} />
         <Route element={<ProtectedRoute authed={authed} />}>
+          <Route path="/dashboard" element={<Dashboard />} />
           <Route path="/rfp" element={<RFPSolutionGenerator />} />
+          <Route path="/tenders" element={<ActiveTenders />} />
+          <Route path="/wishlist" element={<Wishlist />} />
         </Route>
       </Routes>
     </Router>

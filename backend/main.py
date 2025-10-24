@@ -33,6 +33,33 @@ app = FastAPI(title="RFP Solution Generator")
 # try:
 from upload_routes import router as upload_router
 app.include_router(upload_router)
+# Include tenders routes
+try:
+    from tenders_routes import router as tenders_router
+    app.include_router(tenders_router)
+except Exception as e:
+    safe_print(f"[WARN] Tenders routes not loaded: {e}")
+
+# Include wishlist routes
+try:
+    from wishlist_routes import router as wishlist_router
+    app.include_router(wishlist_router)
+except Exception as e:
+    safe_print(f"[WARN] Wishlist routes not loaded: {e}")
+
+# Ensure DB tables for tenders and wishlists exist on startup
+try:
+    from database import ensure_tenders_table, ensure_wishlists_table
+
+    @app.on_event("startup")
+    async def _startup_tables():
+        try:
+            ensure_tenders_table()
+            ensure_wishlists_table()
+        except Exception as e:
+            safe_print(f"[WARN] ensure_tables failed: {e}")
+except Exception as e:
+    safe_print(f"[WARN] Could not register startup hook for tables: {e}")
 # except Exception:
 #     # If import fails during static analysis, skip. Runtime should work when packages installed.
 #     pass
@@ -71,7 +98,7 @@ except Exception as e:
 
 # New: environment-driven configuration
 GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
-ALLOWED_ORIGINS = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "http://localhost:3000").split(",") if o.strip()]
+ALLOWED_ORIGINS = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000").split(",") if o.strip()]
 MAX_FILE_SIZE_MB = int(os.getenv("MAX_FILE_SIZE_MB", "10"))
 MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
 
@@ -1133,6 +1160,100 @@ async def chat_with_groq(request: Request):
     except Exception as e:
         safe_print("Chat API Error:", str(e))
         return {"response": "Sorry, something went wrong while generating a reply.", "action": None}
+
+@app.post("/api/tender-chat")
+async def chat_with_tenders(request: Request):
+    """
+    Tender-specific Chatbot Agent using Groq LLM.
+    Handles questions about scraped tender data with real-time access.
+    """
+    try:
+        data = await request.json()
+        message = (data.get("message") or "").strip()
+        tender_data = data.get("tender_data", [])
+
+        if not message:
+            return {"response": "Please enter a message.", "action": None}
+        
+        # Get fresh tender data if not provided
+        if not tender_data:
+            try:
+                safe_print("Fetching fresh tender data...")
+                from scraper_service import fetch_all_sources
+                fresh_data = fetch_all_sources(limit_per_source=50, ttlh_only=True, max_pages=1) or {}
+                safe_print(f"Fresh data sources: {list(fresh_data.keys()) if fresh_data else 'None'}")
+                tender_data = []
+                for source_name, source_tenders in fresh_data.items():
+                    safe_print(f"Processing {source_name}: {len(source_tenders)} tenders")
+                    for tender in source_tenders:
+                        tender_data.append({
+                            "source": source_name,
+                            "tender_id": tender.get("tender_id"),
+                            "title": tender.get("title"),
+                            "organization": tender.get("organization"),
+                            "sector": tender.get("sector"),
+                            "deadline": tender.get("deadline"),
+                            "value": tender.get("value"),
+                            "url": tender.get("url"),
+                            "description": tender.get("description", "")
+                        })
+                safe_print(f"Total tender data prepared: {len(tender_data)} tenders")
+            except Exception as e:
+                safe_print(f"Error fetching fresh tender data: {e}")
+                import traceback
+                traceback.print_exc()
+                tender_data = []
+
+        # Create context from tender data
+        tender_context = ""
+        if tender_data:
+            tender_context = f"Current Tender Data ({len(tender_data)} tenders):\n"
+            for i, tender in enumerate(tender_data[:20], 1):  # Limit to first 20 tenders for context
+                tender_context += f"""
+{i}. Tender ID: {tender.get('tender_id', 'N/A')}
+   Title: {tender.get('title', 'N/A')}
+   Organization: {tender.get('organization', 'N/A')}
+   Sector: {tender.get('sector', 'N/A')}
+   Deadline: {tender.get('deadline', 'N/A')}
+   Value: {tender.get('value', 'N/A')}
+   Source: {tender.get('source', 'N/A')}
+   Description: {tender.get('description', 'N/A')[:200]}...
+   URL: {tender.get('url', 'N/A')}
+"""
+        else:
+            tender_context = "No tender data available at the moment."
+
+        prompt = f"""
+        You are a helpful AI assistant for a tender management system. You have access to real-time scraped tender data and can answer questions about specific tenders, sectors, deadlines, values, and other details.
+
+        {tender_context}
+
+        User Question: {message}
+
+        Instructions:
+        - Answer questions about specific tenders by referencing their tender ID, title, organization, sector, deadline, value, etc.
+        - Help users find tenders by sector, organization, deadline, or value range
+        - Provide specific details when asked about particular tenders
+        - If asked about a tender by number, refer to the tender ID and provide key details
+        - Be helpful and specific in your responses
+        - If you don't have information about a specific tender, say so clearly
+        - Use the tender data provided above to give accurate answers
+        """
+
+        response = groq_client.chat.completions.create(
+            model=GROQ_MODEL,
+            messages=[
+                {"role": "system", "content": "You are a helpful assistant for tender management and analysis. You have access to real-time tender data and can answer questions about specific tenders, sectors, deadlines, values, and other details."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.3,
+            max_tokens=500
+        )
+        answer = response.choices[0].message.content.strip()
+        return {"response": answer, "action": None}
+    except Exception as e:
+        safe_print("Tender Chat API Error:", str(e))
+        return {"response": "Sorry, something went wrong while generating a reply. Please try again.", "action": None}
     
 @app.get("/api/health")
 async def health_check():
