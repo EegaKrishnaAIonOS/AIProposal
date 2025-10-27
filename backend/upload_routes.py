@@ -27,7 +27,14 @@ load_dotenv()
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 PINECONE_ENVIRONMENT = os.getenv("PINECONE_ENVIRONMENT")
 PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX_NAME")
-EMBEDDING_MODEL = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+# Lazy initialization to avoid import-time model loading
+EMBEDDING_MODEL = None
+
+def get_embedding_model():
+    global EMBEDDING_MODEL
+    if EMBEDDING_MODEL is None:
+        EMBEDDING_MODEL = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+    return EMBEDDING_MODEL
 
 pc = Pinecone(api_key=PINECONE_API_KEY)
 
@@ -94,7 +101,7 @@ async def upload_solution(file: UploadFile = File(...), x_user_id: Optional[str]
 		vectors = []
 		for doc in docs:
 			doc_id = str(uuid.uuid4())
-			embedding = EMBEDDING_MODEL.embed_documents([doc.page_content])[0]
+			embedding = get_embedding_model().embed_documents([doc.page_content])[0]
 			metadata = {"filename": filename, "user_id": user_id, "text": doc.page_content}
 			vectors.append((doc_id, embedding, metadata))
 
