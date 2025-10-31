@@ -452,38 +452,152 @@ def _insert_toc(doc: Document) -> None:
 
 def render_mermaid_to_image(mermaid_code: str) -> str | None:
     """Render Mermaid code to a temporary PNG file using Kroki API."""
+    import json
+    safe_print("[DEBUG] Starting diagram rendering")
+    
     if not mermaid_code or not mermaid_code.strip():
+        safe_print("[ERROR] No Mermaid code provided")
         raise ValueError("No Mermaid code provided")
     
-    payload = {
-        "diagram_source": mermaid_code,
-        "diagram_type": "mermaid",
-        "output_format": "png"
-    }
-    
+    # Apply enhancements before rendering
     try:
-        response = requests.post("https://kroki.io", json=payload, timeout=10)
+        from diagram_utils import enhance_mermaid_diagram
+        safe_print("[DEBUG] Original diagram code length:", len(mermaid_code))
+        safe_print("[DEBUG] Original diagram preview:", mermaid_code[:200])
+        
+        enhanced_code = enhance_mermaid_diagram(mermaid_code)
+        safe_print("[DEBUG] Enhanced diagram preview:", enhanced_code[:200])
+        
+        # Ensure proper formatting
+        if not enhanced_code.strip().startswith("flowchart") and not enhanced_code.strip().startswith("graph"):
+            safe_print("[WARN] Adding missing flowchart declaration")
+            enhanced_code = "flowchart TD\n" + enhanced_code.strip()
+            
+        # Convert newlines to actual newlines for proper JSON encoding
+        enhanced_code = enhanced_code.replace('\\n', '\n')
+    except Exception as e:
+        safe_print(f"[ERROR] Failed to enhance diagram: {str(e)}")
+        enhanced_code = mermaid_code
+    
+        # Try the newer Kroki diagram generation method
+    try:
+        import base64, zlib, json
+        safe_print("[DEBUG] Attempting Kroki diagram generation...")
+        
+        # Use base64 encoded payload
+        diagram_bytes = enhanced_code.encode('utf-8')
+        encoded_payload = base64.urlsafe_b64encode(zlib.compress(diagram_bytes)).decode('ascii')
+        
+        # Make a direct GET request with encoded diagram
+        url = f"https://kroki.io/mermaid/svg/{encoded_payload}"
+        safe_print("[DEBUG] Sending request to:", url[:100] + "...")
+        
+        response = requests.get(
+            url,
+            headers={'Accept': 'image/svg+xml'},
+            timeout=20
+        )
+        
+        safe_print(f"[DEBUG] Kroki response status: {response.status_code}")
+        safe_print(f"[DEBUG] Kroki response headers: {response.headers}")
+        
         if response.status_code == 200:
             temp_dir = tempfile.gettempdir()
             image_path = os.path.join(
                 temp_dir,
-                f'architecture_diagram_{datetime.now().strftime("%Y%m%d_%H%M%S")}.png'
+                f'architecture_diagram_{datetime.now().strftime("%Y%m%d_%H%M%S")}.svg'
             )
+            
+            safe_print(f"[DEBUG] Writing SVG to file: {image_path}")
             with open(image_path, "wb") as f:
                 f.write(response.content)
-            return image_path
+            
+            if os.path.getsize(image_path) > 0:
+                safe_print(f"[DEBUG] Generated SVG size: {os.path.getsize(image_path)} bytes")
+                return image_path
+            else:
+                safe_print("[ERROR] Generated SVG is empty")
+                os.remove(image_path)
+                return None
+                
         else:
-            safe_print(f"[WARN] Kroki API error {response.status_code}: {response.text[:100]}")
+            safe_print(f"[ERROR] Kroki API error: {response.status_code}")
+            try:
+                error_content = response.text
+                safe_print(f"Error response: {error_content[:500]}")
+            except:
+                safe_print("Could not read error response")
+            return None
+            
+    except Exception as e:
+        safe_print(f"[ERROR] Kroki generation failed: {str(e)}")
+        safe_print("[DEBUG] Trying fallback method...")    # Fallback to POST method with direct diagram payload
+    try:
+        safe_print("[DEBUG] Using fallback POST method...")
+        response = requests.post(
+            "https://kroki.io/mermaid/svg",
+            data=enhanced_code,
+            headers={'Content-Type': 'text/plain'},
+            timeout=15
+        )
+        safe_print(f"[DEBUG] Kroki POST response status: {response.status_code}")
+        
+        if response.status_code == 200 and response.content:
+            temp_dir = tempfile.gettempdir()
+            image_path = os.path.join(
+                temp_dir,
+                f'architecture_diagram_{datetime.now().strftime("%Y%m%d_%H%M%S")}.svg'
+            )
+            
+            safe_print(f"[DEBUG] Writing to temp file: {image_path}")
+            with open(image_path, "wb") as f:
+                f.write(response.content)
+            
+            if os.path.getsize(image_path) > 0:
+                safe_print(f"[DEBUG] Generated file size: {os.path.getsize(image_path)} bytes")
+                return image_path
+            else:
+                safe_print("[ERROR] Generated file is empty")
+                os.remove(image_path)
+                return None
+                
+        else:
+            safe_print(f"[ERROR] Kroki API error {response.status_code}")
+            safe_print(f"Error response: {response.text[:500]}")
+            
+            # Last resort: Try PNG format
+            safe_print("[DEBUG] Attempting PNG format as last resort...")
+            response = requests.post(
+                "https://kroki.io/mermaid/png",
+                data=enhanced_code,
+                headers={'Content-Type': 'text/plain'},
+                timeout=15
+            )
+            
+            if response.status_code == 200 and response.content:
+                temp_dir = tempfile.gettempdir()
+                image_path = os.path.join(
+                    temp_dir,
+                    f'architecture_diagram_{datetime.now().strftime("%Y%m%d_%H%M%S")}.png'
+                )
+                
+                with open(image_path, "wb") as f:
+                    f.write(response.content)
+                
+                if os.path.getsize(image_path) > 0:
+                    safe_print(f"[DEBUG] Generated PNG size: {os.path.getsize(image_path)} bytes")
+                    return image_path
+            
             return None
     except Exception as e:
-        safe_print(f"[WARN] Kroki rendering failed: {str(e)}")
+        safe_print(f"[ERROR] Kroki rendering failed: {str(e)}")
         return None
 
 # LLM Processing
 async def analyze_rfp_with_groq(rfp_text: str,use_rag: bool = True) -> GeneratedSolution:
-    """Analyze RFP text using Groq and generate solution"""
+    """Analyze RFP text using Groq and generate solution with professional architecture diagrams"""
 
-    #step1: Retrieve relevant documents from vector store
+    # Step 1: Retrieve relevant documents from vector store
     retrieved_docs = []
     if use_rag:
         try:
@@ -492,121 +606,275 @@ async def analyze_rfp_with_groq(rfp_text: str,use_rag: bool = True) -> Generated
             safe_print(f"Error retrieving from vector store: {str(e)}")
             retrieved_docs = []
 
-    safe_print("--- Retrieved Chunks for Validation ---")
-    if not retrieved_docs:
-        safe_print("No relevant chunks found in the vector store.")
-    for i, doc in enumerate(retrieved_docs):
-        safe_print(f"Chunk {i+1}:")
-        safe_print(doc.page_content)
-        safe_print(f"Source file: {doc.metadata.get('filename', 'N/A')}")
-        safe_print("-" * 50)
-
     context_text = "\n\n".join([doc.page_content for doc in retrieved_docs]) if retrieved_docs else "No relevant references found."
     
-    #step2: build prompt with references
+    # Step 2: Enhanced prompt with professional diagram requirements
     prompt = f"""
-    You are an expert technical consultant specializing in creating detailed technical proposals for RFPs. Try to identify the field/domain of the RFP and tailor the solution accordingly. 
-    While drafting the solution, ensure to incorporate the domain knowledge, and include proper jargoan.
-    Use the uploaded reference solutions (if relevant) as inspiration, but adapt to the new RFP.
+You are an expert technical consultant specializing in creating detailed technical proposals for RFPs. 
 
-    Based on the following RFP document, generate a comprehensive technical proposal that follows this structure:
-    
-    1. Title
-    2. Problem Statement
-    3. Key Challenges (3-5 items)
-    4. Solution Approach (4-6 steps with title and description for each)
-    5. Architecture Diagram (Generate valid **Mermaid syntax only**,suitable  for a  component diagram  representing the system architecture that includes the AI components like LLMs etc, if applicable.
-       Use proper syntax like:
-       graph TD
-         A[Client] --> B[Server]
-         B --> C[Database]
-       Do not include any explanations, prose, code fences, or comments.  
-       Only the raw Mermaid code as a string.)
-    6. Milestones (5-8 phases with duration and description)
-    7. Technical Stack
-    8. Objectives
-    9. Acceptance Criteria
-    10. Resources (list of roles with counts, years_of_experience, responsibilities)
-    11. Cost Analysis (INR currency; list of cost items with cost and optional notes)
-    12. Key Performance Indicators (4-6 KPIs with metric name, target value, measurement method, and measurement frequency)
-    
-    Respond ONLY with a single fenced JSON block using triple backticks and the json language tag. No prose before or after.
-    
-    RFP Content:
-    {rfp_text[:8000]}
+**CRITICAL: You must analyze the RFP domain carefully and generate appropriate architecture diagrams.**
 
-    Reference Solutions ( from previous uploads):
-    {context_text[:6000]}
-    
-    The JSON structure must be exactly:
-    {{
-        "title": "Solution title",
-        "date": "{datetime.now().strftime('%B %Y')}",
-        "problem_statement": "Problem description",
-        "key_challenges": ["challenge1", "challenge2"],
-        "solution_approach": [
-            {{"title": "Step 1: Title", "description": "Detailed description"}}
-        ],
-        "architecture_diagram": "graph TD\\nA[Client] --> B[Server]\\n...", //Raw mermaid code as string
-        "milestones": [
-            {{"phase": "Phase Name", "duration": "X weeks", "description": "Phase description"}}
-        ],
-        "technical_stack": ["Technology1", "Technology2"],
-        "objectives": ["Objective1", "Objective2"],
-        "acceptance_criteria": ["Criteria1", "Criteria2"],
-        "resources": [
-            {{"role": "Role Name", "count": 3, "years_of_experience": 5, "responsibilities": "Key responsibilities"}}
-        ],
-        "cost_analysis": [
-            {{"item": "Item name", "cost": "₹750,000", "notes": "Optional note"}}
-        ],
-        "key_performance_indicators": [
-            {{"metric": "KPI Name", "target": "Target value", "measurement_method": "How it will be measured", "frequency": "Measurement frequency"}}
-        ]
-    }}
-    """
+Based on the following RFP document, generate a comprehensive technical proposal:
+
+STRUCTURE REQUIREMENTS:
+1. Title - Create a professional, domain-specific title
+2. Problem Statement - Clear articulation of the challenge
+3. Key Challenges (3-5 items) - Specific technical and business challenges
+4. Solution Approach (4-6 steps) - Detailed implementation strategy with titles and descriptions
+
+5. **Architecture Diagram - MANDATORY PROFESSIONAL DIAGRAM:**
+   
+   **Domain Analysis First:**
+   - Identify if this is: Web/Mobile App, Microservices, Data Pipeline, AI/ML System, IoT, E-commerce, Healthcare, Fintech, etc.
+   - Choose appropriate architecture pattern: Microservices, Event-Driven, Serverless, Monolithic, etc.
+   
+   **Diagram Complexity (CRITICAL):**
+   - Minimum 10-15 nodes showing realistic system components
+   - Use subgraphs to organize layers: Client, Edge, Gateway, Services, Data, Infrastructure
+   - Every node MUST be connected (no floating nodes)
+   - Show actual data flow and interactions
+   
+   **Technology Selection (Vary Based on Requirements):**
+   - Cloud: AWS (Lambda, S3, RDS), Azure (Functions, Blob, SQL), or GCP (Cloud Run, Storage, BigQuery)
+   - Databases: PostgreSQL (relational/ACID), MongoDB (documents), DynamoDB (key-value), Cassandra (distributed)
+   - Caching: Redis (versatile), Memcached (simple), ElastiCache
+   - Queuing: Kafka (streaming), RabbitMQ (reliable), SQS (managed), PubSub
+   - Storage: S3, Azure Blob, GCS, MinIO
+   
+   **Mermaid Syntax Rules (MUST FOLLOW):**
+   - Simple node IDs only: WebApp, UserSvc, PrimaryDB (no spaces/hyphens)
+   - Subgraph format: `subgraph CL[Client Layer]`
+   - Use only `-->` or `-->|Label|` for edges
+   - NO comments (% not supported)
+   - Apply classDef styling at the end
+   
+   **Required Component Examples:**
+   - Frontend: Web App, Mobile App, SPA
+   - Edge: CDN (CloudFront/CloudFlare), Load Balancer (ALB/NLB), WAF
+   - Gateway: API Gateway, Auth Service, Rate Limiter
+   - Services: User Service, Order Service, Payment Service, Notification Service
+   - Infrastructure: Message Queue, Cache, Service Mesh, Monitoring
+   - Data: Primary DB, Analytics DB, Data Warehouse, Object Storage, Search Engine
+   
+   **Styling (Apply at end of diagram):**
+   ```
+   classDef client fill:#e3f2fd,stroke:#1976d2,stroke-width:2px,color:#000
+   classDef edge fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px,color:#000
+   classDef gateway fill:#fff3e0,stroke:#f57c00,stroke-width:2px,color:#000
+   classDef service fill:#e8f5e9,stroke:#388e3c,stroke-width:2px,color:#000
+   classDef queue fill:#fce4ec,stroke:#c2185b,stroke-width:2px,color:#000
+   classDef cache fill:#e1f5fe,stroke:#0277bd,stroke-width:2px,color:#000
+   classDef storage fill:#fffde7,stroke:#f9a825,stroke-width:2px,color:#000
+   ```
+   
+   **Example Pattern (Adapt to RFP domain):**
+   ```
+   flowchart TD
+     subgraph CL[Client Layer]
+       Web[Web Application]:::client
+       Mobile[Mobile App]:::client
+     end
+     subgraph Edge[Edge Network]
+       CDN[CloudFront CDN]:::edge
+       WAF[Web Firewall]:::edge
+       LB[Load Balancer]:::edge
+     end
+     subgraph GW[API Gateway]
+       API[API Gateway]:::gateway
+       Auth[Auth Service]:::gateway
+       RateLimit[Rate Limiter]:::gateway
+     end
+     subgraph SVC[Microservices]
+       UserSvc[User Service]:::service
+       OrderSvc[Order Service]:::service
+       PaySvc[Payment Service]:::service
+       NotifySvc[Notification Service]:::service
+     end
+     subgraph INF[Infrastructure]
+       Queue[Kafka Queue]:::queue
+       Cache[(Redis Cache)]:::cache
+       ServiceMesh[Service Mesh]:::queue
+     end
+     subgraph DATA[Data Layer]
+       PrimaryDB[(PostgreSQL)]:::storage
+       AnalyticsDB[(Redshift)]:::storage
+       S3[S3 Storage]:::storage
+       Search[(Elasticsearch)]:::storage
+     end
+     
+     Web --> CDN
+     Mobile --> CDN
+     CDN --> WAF
+     WAF --> LB
+     LB --> API
+     API --> Auth
+     Auth --> RateLimit
+     RateLimit --> UserSvc
+     RateLimit --> OrderSvc
+     UserSvc --> Cache
+     UserSvc --> PrimaryDB
+     OrderSvc --> Queue
+     Queue --> PaySvc
+     Queue --> NotifySvc
+     PaySvc --> PrimaryDB
+     OrderSvc --> AnalyticsDB
+     NotifySvc --> Search
+     UserSvc --> S3
+     ServiceMesh --> UserSvc
+     ServiceMesh --> OrderSvc
+     ServiceMesh --> PaySvc
+     
+     classDef client fill:#e3f2fd,stroke:#1976d2,stroke-width:2px,color:#000
+     classDef edge fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px,color:#000
+     classDef gateway fill:#fff3e0,stroke:#f57c00,stroke-width:2px,color:#000
+     classDef service fill:#e8f5e9,stroke:#388e3c,stroke-width:2px,color:#000
+     classDef queue fill:#fce4ec,stroke:#c2185b,stroke-width:2px,color:#000
+     classDef cache fill:#e1f5fe,stroke:#0277bd,stroke-width:2px,color:#000
+     classDef storage fill:#fffde7,stroke:#f9a825,stroke-width:2px,color:#000
+   ```
+
+6. Milestones (5-8 phases) - Timeline with durations and descriptions
+7. Technical Stack - Appropriate technologies based on architecture
+8. Objectives - Clear, measurable goals
+9. Acceptance Criteria - Specific validation requirements
+10. Resources - Team structure with roles, counts, experience, responsibilities
+11. Cost Analysis (INR) - Itemized costs with notes
+12. Key Performance Indicators - Metrics with targets, measurement methods, frequency
+
+RFP Content:
+{rfp_text[:8000]}
+
+Reference Solutions:
+{context_text[:6000]}
+
+**OUTPUT FORMAT:**
+Respond with a single JSON block (use triple backticks with json tag). No prose before or after.
+
+JSON Structure:
+{{
+    "title": "Professional domain-specific title",
+    "date": "{datetime.now().strftime('%B %Y')}",
+    "problem_statement": "Clear problem description",
+    "key_challenges": ["challenge1", "challenge2", "challenge3"],
+    "solution_approach": [
+        {{"title": "Step 1: Analysis", "description": "Detailed description"}}
+    ],
+    "architecture_diagram": "Complete Mermaid flowchart code (15-25 lines minimum, following all syntax rules above)",
+    "milestones": [
+        {{"phase": "Phase 1", "duration": "2 weeks", "description": "Description"}}
+    ],
+    "technical_stack": ["Technology1", "Technology2"],
+    "objectives": ["Objective1", "Objective2"],
+    "acceptance_criteria": ["Criteria1", "Criteria2"],
+    "resources": [
+        {{"role": "Role", "count": 2, "years_of_experience": 5, "responsibilities": "Key duties"}}
+    ],
+    "cost_analysis": [
+        {{"item": "Item", "cost": "₹750,000", "notes": "Optional note"}}
+    ],
+    "key_performance_indicators": [
+        {{"metric": "KPI", "target": "Target", "measurement_method": "Method", "frequency": "Frequency"}}
+    ]
+}}
+"""
     #step3: call groq LLM as before
     try:
+        messages = [
+            {
+                "role": "system",
+                "content": "You are a technical proposal expert. IMPORTANT: Generate valid JSON output ONLY. No markdown, no backticks, no prose. Start directly with { and end with }. Always include architecture_diagram key with valid Mermaid code that follows given syntax rules."
+            },
+            {"role": "user", "content": prompt}
+        ]
+
+        # Use a slightly higher temperature for more varied diagrams
         response = groq_client.chat.completions.create(
             model=GROQ_MODEL,
-            messages=[
-                {"role": "system", "content": "You are a technical proposal expert. Always respond with valid JSON inside a fenced ```json block."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.3,
-            max_tokens=4000
+            messages=messages,
+            temperature=0.4,
+            max_tokens=4500,
+            top_p=0.9
         )
         
-        response_text = response.choices[0].message.content or ""
+        response_text = (response.choices[0].message.content or "").strip()
         
-        # Robust fenced JSON extraction
-        json_start = response_text.find("```json")
-        json_end = response_text.rfind("```")
-        if json_start != -1 and json_end != -1 and json_end > json_start:
-            json_str = response_text[json_start + len("```json"):json_end].strip()
-        else:
-            # Fallback: try to slice from first { to last }
-            brace_start = response_text.find('{')
-            brace_end = response_text.rfind('}')
-            if brace_start == -1 or brace_end == -1:
-                raise ValueError("No JSON found in response")
-            json_str = response_text[brace_start:brace_end+1]
-        
+        # Enhanced JSON extraction
+        def clean_json_response(text):
+            # Remove markdown fences if present
+            if "```" in text:
+                # Find the first and last backtick sections
+                parts = text.split("```")
+                for part in parts:
+                    # Take the part that starts with a curly brace
+                    if part.strip().startswith("{"):
+                        text = part.strip()
+                        break
+            
+            # Ensure we have valid JSON start/end
+            text = text.strip()
+            if not text.startswith("{"):
+                brace_start = text.find("{")
+                if brace_start != -1:
+                    text = text[brace_start:]
+            if not text.endswith("}"):
+                brace_end = text.rfind("}")
+                if brace_end != -1:
+                    text = text[:brace_end+1]
+            
+            # Validate basic JSON structure
+            if not (text.startswith("{") and text.endswith("}")):
+                raise ValueError("Response is not properly formatted JSON")
+                
+            return text
+
+        # Clean and parse JSON
+        json_str = clean_json_response(response_text)
         solution_data = json.loads(json_str)
 
-        if solution_data.get("architecture_diagram"):
-            image_path = render_mermaid_to_image(solution_data["architecture_diagram"])
-            if image_path and os.path.exists(image_path):
-                try:
-                    with open(image_path, "rb") as image_file:
-                        encoded_image = base64.b64encode(image_file.read()).decode("utf-8")
-                        solution_data["architecture_diagram_image"] = f"data:image/png;base64,{encoded_image}"
-                    os.remove(image_path)
-                except Exception as e:
-                    safe_print(f"[WARN] Error reading generated diagram: {e}")
+        # Handle architecture diagram generation
+        diagram_code = solution_data.get("architecture_diagram")
+        if diagram_code:
+            safe_print("[INFO] Generating architecture diagram...")
+            safe_print(f"[DEBUG] Diagram code length: {len(diagram_code)}")
+            safe_print(f"[DEBUG] Diagram code preview:\n{diagram_code[:500]}...")
+            
+            try:
+                # Ensure the diagram code is properly formatted
+                if not diagram_code.strip().startswith(("graph", "flowchart")):
+                    safe_print("[WARN] Adding flowchart declaration")
+                    diagram_code = "flowchart TD\n" + diagram_code.strip()
+                
+                # Generate the image
+                image_path = render_mermaid_to_image(diagram_code)
+                safe_print(f"[INFO] Generated image path: {image_path}")
+                
+                if image_path and os.path.exists(image_path):
+                    try:
+                        with open(image_path, "rb") as image_file:
+                            image_data = image_file.read()
+                            if len(image_data) > 0:
+                                # Check if it's SVG or PNG
+                                is_svg = image_path.lower().endswith('.svg')
+                                encoded_image = base64.b64encode(image_data).decode("utf-8")
+                                mime_type = 'image/svg+xml' if is_svg else 'image/png'
+                                solution_data["architecture_diagram_image"] = f"data:{mime_type};base64,{encoded_image}"
+                                safe_print(f"[INFO] Successfully encoded diagram as {mime_type} ({len(encoded_image)} chars)")
+                            else:
+                                safe_print("[ERROR] Generated image file is empty")
+                                solution_data["architecture_diagram_image"] = None
+                        os.remove(image_path)
+                    except Exception as e:
+                        safe_print(f"[ERROR] Failed to read/encode diagram: {str(e)}")
+                        import traceback
+                        safe_print(f"[DEBUG] Error traceback: {traceback.format_exc()}")
+                        solution_data["architecture_diagram_image"] = None
+                else:
+                    safe_print("[ERROR] No diagram image was generated")
                     solution_data["architecture_diagram_image"] = None
-            else:
-                safe_print("[INFO] Kroki diagram generation failed; continuing without image.")
+            except Exception as e:
+                safe_print(f"[ERROR] Diagram generation failed: {str(e)}")
+                import traceback
+                safe_print(f"[DEBUG] Error traceback: {traceback.format_exc()}")
                 solution_data["architecture_diagram_image"] = None
             return GeneratedSolution(**solution_data)
         
@@ -645,7 +913,41 @@ async def analyze_rfp_with_groq(rfp_text: str,use_rag: bool = True) -> Generated
                     "description": "Production deployment with monitoring and support setup"
                 }
             ],
-            architecture_diagram="graph TD\nA[Client] --> B[API Gateway]\nB --> C[Microservice 1]\nB --> D[Microservice 2]",  # Fallback Mermaid code
+            architecture_diagram="""flowchart TD
+    subgraph CL[Client Layer]
+        Web[Web App]:::client
+        Mobile[Mobile App]:::client
+    end
+    
+    subgraph GW[Gateway Layer]
+        API[API Gateway]:::gateway
+        Auth[Auth Service]:::gateway
+    end
+    
+    subgraph SVC[Services]
+        Svc1[Service 1]:::service
+        Svc2[Service 2]:::service
+    end
+    
+    subgraph DB[Data Layer]
+        Store[(Database)]:::storage
+        Cache[(Redis)]:::cache
+    end
+    
+    Web --> API
+    Mobile --> API
+    API --> Auth
+    Auth --> Svc1
+    Auth --> Svc2 
+    Svc1 --> Store
+    Svc2 --> Store
+    Svc1 --> Cache
+    
+    classDef client fill:#e3f2fd,stroke:#1976d2,stroke-width:2px,color:#000
+    classDef gateway fill:#fff3e0,stroke:#f57c00,stroke-width:2px,color:#000
+    classDef service fill:#e8f5e9,stroke:#388e3c,stroke-width:2px,color:#000
+    classDef storage fill:#fffde7,stroke:#f9a825,stroke-width:2px,color:#000
+    classDef cache fill:#e1f5fe,stroke:#0277bd,stroke-width:2px,color:#000""",  # Fallback Mermaid code with proper styling
             milestones=[
                 {"phase": "Planning & Design", "duration": "2 weeks", "description": "Requirements analysis and solution design"},
                 {"phase": "Development Phase 1", "duration": "4 weeks", "description": "Core functionality development"},
