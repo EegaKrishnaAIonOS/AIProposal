@@ -1,76 +1,27 @@
-# Byte-compiled / optimized / DLL files
+# Python
 __pycache__/
-*.py[cod]
-*$py.class
 *.pyc
 *.pyo
 *.pyd
-
-# SQLite / DB files
 *.sqlite3
 *.db
-
-# Logs
 *.log
-logs/
-.coverage
-coverage/
 
-# Virtual Environments
+# Virtual Environment
 venv/
-.venv/
-env/
-ENV/
-
-# Environment variable files (secrets)
 .env
-.env.*
-.secrets/
 
-# Node
+# Node.js
 node_modules/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
-pnpm-debug.log*
+.pnpm-debug.log*
 
-# Frontend build
-frontend/build/
-front-end/build/
-.next/
-
-# Packaging
+# Build outputs
 dist/
 build/
-*.egg-info/
-pip-wheel-metadata/
 
-# OS / misc
+# OS/System files
 .DS_Store
 Thumbs.db
-ehthumbs.db
-desktop.ini
-
-# IDEs / editors
-.vscode/
-.idea/
-*.sublime-workspace
-*.sublime-project
-
-# Temporary files
-*.swp
-*.swo
-*~
-
-# Generated and uploaded files
-backend/generated_solutions/
-backend/uploads/
-backend/__pycache__/
-
-# Docker
-docker-compose.override.yml
-
-# Keep requirement manifests tracked (do not ignore):
-# backend/requirements.txt
-# frontend/package.json
-

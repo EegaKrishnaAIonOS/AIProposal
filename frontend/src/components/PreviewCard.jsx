@@ -1,4 +1,4 @@
-import React, { useState, useRef, useImperativeHandle, forwardRef, useEffect } from 'react';
+import React, { useState,useRef,useImperativeHandle,forwardRef } from 'react';
 import { ChevronDown, ChevronRight, FileText, Plus, X } from 'lucide-react';
 
 function Section({ title, children, defaultOpen = true, innerRef }) {
@@ -44,56 +44,6 @@ const PreviewCard = forwardRef(({ solution, editable = false, onChange }, ref) =
       }
     },
   }));
-
-  // Diagram fetch state and effect: if there is Mermaid code but no image, fetch SVG from Kroki
-  const [diagramLoading, setDiagramLoading] = useState(false);
-  const [diagramError, setDiagramError] = useState(null);
-
-  useEffect(() => {
-    if (!solution || !solution.architecture_diagram) return;
-    // If an image is already present, nothing to do
-    if (solution.architecture_diagram_image) return;
-
-    let mounted = true;
-    const controller = new AbortController();
-
-    async function fetchSvg() {
-      setDiagramError(null);
-      setDiagramLoading(true);
-      try {
-        const src = solution.architecture_diagram;
-        const resp = await fetch('https://kroki.io/mermaid/svg', {
-          method: 'POST',
-          headers: { 'Content-Type': 'text/plain' },
-          body: src,
-          signal: controller.signal
-        });
-        if (!resp.ok) {
-          throw new Error(`Kroki returned ${resp.status}`);
-        }
-        const svgText = await resp.text();
-        // Convert to base64 safely for unicode
-        const b64 = window.btoa(unescape(encodeURIComponent(svgText)));
-        const dataUri = `data:image/svg+xml;base64,${b64}`;
-        if (!mounted) return;
-        // Persist the generated image into solution via onChange
-        updateField('architecture_diagram_image', dataUri);
-      } catch (err) {
-        if (err.name === 'AbortError') return;
-        console.error('Failed to fetch SVG from Kroki:', err);
-        if (mounted) setDiagramError(err.message || String(err));
-      } finally {
-        if (mounted) setDiagramLoading(false);
-      }
-    }
-
-    fetchSvg();
-
-    return () => {
-      mounted = false;
-      controller.abort();
-    };
-  }, [solution?.architecture_diagram, solution?.architecture_diagram_image]);
 
   if (!solution) {
     return (
@@ -324,12 +274,6 @@ const PreviewCard = forwardRef(({ solution, editable = false, onChange }, ref) =
       {solution.architecture_diagram && (
         <Section title="Architecture Diagram" innerRef={sectionRefs['architecture-diagram']}>
           <div className="border border-gray-200 rounded-lg p-4">
-            {console.log('Architecture Data:', {
-              diagram: solution.architecture_diagram?.substring(0, 100) + '...',
-              image: solution.architecture_diagram_image?.substring(0, 100) + '...',
-              hasImage: !!solution.architecture_diagram_image,
-              imageType: typeof solution.architecture_diagram_image
-            })}
             {editable ? (
               <textarea
                 className="w-full text-gray-700 border rounded px-3 py-2"
@@ -338,41 +282,8 @@ const PreviewCard = forwardRef(({ solution, editable = false, onChange }, ref) =
                 onChange={e => updateField('architecture_diagram', e.target.value)}
               />
             ) : (
-              <div>
-                {solution.architecture_diagram_image ? (
-                  <div className="overflow-hidden">
-                    <img 
-                      src={solution.architecture_diagram_image} 
-                      alt="Architecture Diagram" 
-                      className="max-w-full h-auto mx-auto"
-                      onError={(e) => {
-                        console.error('Image failed to load:', e);
-                        e.target.onerror = null; 
-                        e.target.style.display = 'none';
-                        e.target.nextElementSibling.style.display = 'block';
-                      }}
-                      style={{maxHeight: '600px'}}
-                    />
-                    <div className="hidden">
-                      <div className="text-amber-600 mb-4">
-                        Failed to load diagram. Showing raw diagram code:
-                      </div>
-                      <pre className="bg-gray-50 p-4 rounded-lg overflow-x-auto text-sm whitespace-pre-wrap break-all">
-                        {solution.architecture_diagram}
-                      </pre>
-                    </div>
-                  </div>
-                ) : (
-                  <div>
-                    <div className="text-amber-600 mb-4">
-                      Diagram visualization is not available. Showing raw diagram code:
-                    </div>
-                    <pre className="bg-gray-50 p-4 rounded-lg overflow-x-auto text-sm whitespace-pre-wrap break-all">
-                      {solution.architecture_diagram}
-                    </pre>
-                  </div>
-                )}
-              </div>
+              // <p className="text-gray-700 whitespace-pre-wrap">{solution.architecture_diagram}</p>
+              <img src={solution.architecture_diagram_image} alt="Architecture Diagram" className="max-w-full h-auto"/>
             )}
           </div>
         </Section>
