@@ -6,6 +6,7 @@ import ActionButtons from './components/ActionButtons.jsx';
 import PreviewCard from './components/PreviewCard.jsx';
 import GeneratedSolutions from './components/GeneratedSolutions.jsx';
 import UploadSolutionModal from './components/UploadSolutionModal.jsx';
+import RFPProcessPopup from './components/RFPProcessPopup.jsx';
 import {BrowserRouter as Router, Route, Routes, Navigate, Outlet} from 'react-router-dom';
 import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
@@ -36,6 +37,11 @@ const RFPSolutionGenerator = () => {
   const [showLogoutModal,setShowLogoutModal]=useState(false);
   const [recommendations, setRecommendations] = useState([]);
   const [generationMethod, setGenerationMethod] = useState('knowledgeBase'); // 'knowledgeBase' or 'llmOnly'
+  const [knowledgeBase, setKnowledgeBase] = useState(null); // 'AIonOS' or null
+  const [showProcessPopup, setShowProcessPopup] = useState(false);
+  const [processSteps, setProcessSteps] = useState([]);
+  const recPopupRef = useRef(null);
+  const [recHeight, setRecHeight] = useState(0);
   const navigate = useNavigate();
   const previewRef = useRef(null);
 
@@ -59,6 +65,9 @@ const RFPSolutionGenerator = () => {
         const formData = new FormData();
         formData.append('file', file);
         formData.append('method', generationMethod); // Pass the selected generation method to the backend
+        if (knowledgeBase) {
+          formData.append('knowledge_base', knowledgeBase);
+        }
         const response = await fetch('/api/generate-solution', { method: 'POST', body: formData });
         if (!response.ok) {
           let msg = 'Failed to generate solution';
@@ -70,7 +79,7 @@ const RFPSolutionGenerator = () => {
         const response = await fetch('/api/generate-solution-text', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ text: inputText.trim(),method: generationMethod})
+          body: JSON.stringify({ text: inputText.trim(), method: generationMethod, knowledge_base: knowledgeBase })
         });
         if (!response.ok) {
           let msg = 'Failed to generate solution';
@@ -81,6 +90,7 @@ const RFPSolutionGenerator = () => {
       }
       // Adjust for new shape: { solution, recommendations }
       const generated = data?.solution ? data.solution : data;
+      const retrievalInfo = data?.retrieval_info || null;
       const recs = Array.isArray(data?.recommendations) ? data.recommendations : [];
       setSolution(generated);
       // Trigger product recommendations using problem statement
@@ -126,6 +136,26 @@ const RFPSolutionGenerator = () => {
         console.error('Failed to save solution:', saveError);
       }
  
+      // If AIonOS Knowledge Base was used, show process steps popup
+      if (generationMethod === 'knowledgeBase' && knowledgeBase === 'AIonOS') {
+        const filenames = Array.isArray(retrievalInfo?.filenames) ? retrievalInfo.filenames : [];
+        const retrievedCount = typeof retrievalInfo?.retrieved_count === 'number' ? retrievalInfo.retrieved_count : (filenames.length || 0);
+        const topList = filenames.slice(0, 3).join(', ');
+        const moreCount = Math.max(0, (filenames.length - 3));
+        const topMatchesLine = topList ? (`Top matches: ${topList}${moreCount > 0 ? ` (+${moreCount} more)` : ''}`) : 'Top matches identified';
+        setProcessSteps([
+          'Connected to AIonOS Knowledge Base',
+          `Searched relevant documents (${retrievedCount} found)`,
+          topMatchesLine,
+          'Extracted key sections',
+          'Retrieved top matches (RAG)',
+          'Generated proposal draft',
+          'Assembled final document',
+          'Saved to your history'
+        ]);
+        setShowProcessPopup(true);
+      }
+
     } catch (err) {
       setError(err.message);
     } finally {
@@ -214,6 +244,21 @@ const RFPSolutionGenerator = () => {
       console.warn(`Section ref not found for ID: ${sectionId}`);
     }
   };
+
+  // Measure recommendations popup height to avoid collisions with process popup
+  useEffect(() => {
+    if (Array.isArray(recommendations) && recommendations.length > 0) {
+      const measure = () => {
+        try { setRecHeight(recPopupRef.current ? recPopupRef.current.offsetHeight : 0); } catch (e) { setRecHeight(0); }
+      };
+      measure();
+      const ro = new ResizeObserver(measure);
+      if (recPopupRef.current) ro.observe(recPopupRef.current);
+      return () => { try { ro.disconnect(); } catch (e) {} };
+    } else {
+      setRecHeight(0);
+    }
+  }, [recommendations]);
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -315,11 +360,12 @@ const RFPSolutionGenerator = () => {
                 <div className="space-y-2">
                   <div className="flex items-center">
                     <input
-                      type="checkbox"
+                      type="radio"
                       id="llmOnly"
+                      name="genMethod"
                       checked={generationMethod === "llmOnly"}
-                      onChange={() => setGenerationMethod("llmOnly")}
-                      className="form-checkbox h-4 w-4 text-blue-600 transition duration-150 ease-in-out"
+                      onChange={() => { setGenerationMethod("llmOnly"); setKnowledgeBase(null); }}
+                      className="form-radio h-4 w-4 text-blue-600 transition duration-150 ease-in-out"
                     />
                     <label htmlFor="llmOnly" className="ml-2 text-sm text-gray-700">
                       Generate directly from LLM
@@ -327,14 +373,28 @@ const RFPSolutionGenerator = () => {
                   </div>
                   <div className="flex items-center">
                     <input
-                      type="checkbox"
+                      type="radio"
                       id="knowledgeBase"
-                      checked={generationMethod === "knowledgeBase"}
-                      onChange={() => setGenerationMethod("knowledgeBase")}
-                      className="form-checkbox h-4 w-4 text-blue-600 transition duration-150 ease-in-out"
+                      name="genMethod"
+                      checked={generationMethod === "knowledgeBase" && knowledgeBase === null}
+                      onChange={() => { setGenerationMethod("knowledgeBase"); setKnowledgeBase(null); }}
+                      className="form-radio h-4 w-4 text-blue-600 transition duration-150 ease-in-out"
                     />
                     <label htmlFor="knowledgeBase" className="ml-2 text-sm text-gray-700">
-                      Generate using Knowledge Base (RAG)
+                      Use Uploaded Solutions (RAG)
+                    </label>
+                  </div>
+                  <div className="flex items-center">
+                    <input
+                      type="radio"
+                      id="aionosKB"
+                      name="genMethod"
+                      checked={knowledgeBase === "AIonOS"}
+                      onChange={() => { setGenerationMethod("knowledgeBase"); setKnowledgeBase("AIonOS"); }}
+                      className="form-radio h-4 w-4 text-blue-600 transition duration-150 ease-in-out"
+                    />
+                    <label htmlFor="aionosKB" className="ml-2 text-sm text-gray-700 font-semibold text-purple-600">
+                      AIonOS Knowledge Base (SharePoint)
                     </label>
                   </div>
                 </div>
@@ -443,7 +503,7 @@ const RFPSolutionGenerator = () => {
       )}
       {/* Recommendation Pop-up */}
       {Array.isArray(recommendations) && recommendations.length > 0 && (
-        <div className="fixed bottom-6 right-6 z-50 max-w-sm w-full bg-white shadow-lg border border-gray-200 rounded-lg p-4">
+        <div ref={recPopupRef} className="fixed right-6 z-50 max-w-sm w-full bg-white shadow-lg border border-gray-200 rounded-lg p-4" style={{ bottom: 80 }}>
           <div className="flex items-start justify-between">
             <div>
               <h4 className="text-sm font-semibold text-gray-900">Recommended AionOS Solution{recommendations.length>1?'s':''}</h4>
@@ -469,6 +529,13 @@ const RFPSolutionGenerator = () => {
       )}
       {showUpload && (
         <UploadSolutionModal onClose={() => setShowUpload(false)} />
+      )}
+      {showProcessPopup && (
+        <RFPProcessPopup
+          steps={processSteps}
+          onClose={() => setShowProcessPopup(false)}
+          bottomOffset={(Array.isArray(recommendations) && recommendations.length > 0) ? (80 + recHeight + 12) : 88}
+        />
       )}
       {/* Logout Modal */}
       {showLogoutModal && (

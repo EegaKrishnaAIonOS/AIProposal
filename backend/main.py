@@ -13,6 +13,7 @@ from database import get_db, Solution as DBSolution
 import asyncio
 from groq import Groq
 from dotenv import load_dotenv
+import logging
 import PyPDF2
 from docx import Document
 from docx.shared import Inches, Pt
@@ -20,6 +21,7 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_TAB_ALIGNMENT, WD_TAB_LEADER
 from docx.oxml.shared import OxmlElement, qn
 import requests,base64
 from fastapi import Request
+import asyncio
 
 from pinecone import Pinecone
 from langchain_pinecone import PineconeVectorStore
@@ -47,6 +49,13 @@ try:
 except Exception as e:
     safe_print(f"[WARN] Wishlist routes not loaded: {e}")
 
+# Include SharePoint routes
+try:
+    from sharepoint_routes import router as sharepoint_router
+    app.include_router(sharepoint_router)
+except Exception as e:
+    safe_print(f"[WARN] SharePoint routes not loaded: {e}")
+
 # Ensure DB tables for tenders and wishlists exist on startup
 try:
     from database import ensure_tenders_table, ensure_wishlists_table
@@ -65,6 +74,16 @@ except Exception as e:
 #     pass
 
 load_dotenv()
+
+# Basic logging configuration (only if not configured by host)
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+if not logging.getLogger().handlers:
+    logging.basicConfig(
+        level=getattr(logging, LOG_LEVEL, logging.INFO),
+        format="%(asctime)s %(levelname)s %(name)s - %(message)s"
+    )
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("urllib3").setLevel(logging.WARNING)
 
 # Suppress noisy third-party deprecation warnings from langchain_pinecone
 warnings.filterwarnings("ignore", category=DeprecationWarning, module="langchain_pinecone")
@@ -111,6 +130,50 @@ app.add_middleware(
 )
 
 groq_client = Groq(api_key=GROQ_API_KEY)
+
+# --- SharePoint Auto-Sync Configuration ---
+SHAREPOINT_AUTO_SYNC_ENABLED = (os.getenv("SHAREPOINT_AUTO_SYNC_ENABLED", "true").lower() in ("1","true","yes"))
+SHAREPOINT_SYNC_INTERVAL_MINUTES = int(os.getenv("SHAREPOINT_SYNC_INTERVAL_MINUTES", "60"))  # default hourly
+SHAREPOINT_INITIAL_SYNC_ON_START = (os.getenv("SHAREPOINT_INITIAL_SYNC_ON_START", "true").lower() in ("1","true","yes"))
+
+async def _sharepoint_sync_worker() -> None:
+    """Background task to keep AIonOS Knowledge Base up-to-date automatically."""
+    try:
+        from sharepoint_pipeline import SharePointIngestionPipeline, run_incremental_sync
+        pipeline = SharePointIngestionPipeline()
+
+        # Perform initial sync once if requested and not yet done
+        if SHAREPOINT_INITIAL_SYNC_ON_START and not pipeline.delta_link:
+            safe_print("[SharePoint Sync] Running initial sync on startup...")
+            try:
+                result = pipeline.initial_sync()
+                safe_print(f"[SharePoint Sync] Initial sync finished: files={result.get('files_processed')} chunks={result.get('chunks_created')} vectors={result.get('vectors_uploaded')}")
+            except Exception as e:
+                safe_print(f"[SharePoint Sync] Initial sync failed: {e}")
+
+        # Periodic incremental sync loop
+        interval_seconds = max(5, SHAREPOINT_SYNC_INTERVAL_MINUTES * 60)
+        while True:
+            try:
+                safe_print("[SharePoint Sync] Running incremental sync...")
+                result = run_incremental_sync()
+                # result is a dict with stats
+                safe_print(f"[SharePoint Sync] Incremental sync completed: files_processed={result.get('files_processed')} files_updated={result.get('files_updated')} files_deleted={result.get('files_deleted')} vectors={result.get('vectors_uploaded')}")
+            except Exception as e:
+                safe_print(f"[SharePoint Sync] Incremental sync failed: {e}")
+            await asyncio.sleep(interval_seconds)
+    except Exception as e:
+        safe_print(f"[SharePoint Sync] Worker crashed: {e}")
+
+# Start background SharePoint auto-sync on startup (non-blocking)
+if SHAREPOINT_AUTO_SYNC_ENABLED:
+    @app.on_event("startup")
+    async def _startup_sharepoint_sync():
+        try:
+            safe_print(f"[SharePoint Sync] Auto-sync enabled. Interval={SHAREPOINT_SYNC_INTERVAL_MINUTES} min. Initial on start={SHAREPOINT_INITIAL_SYNC_ON_START}")
+            asyncio.create_task(_sharepoint_sync_worker())
+        except Exception as e:
+            safe_print(f"[WARN] Failed to start SharePoint sync worker: {e}")
 
 # --- Logging helper to avoid Windows console encoding errors ---
 def _safe_to_console_text(value: object) -> str:
@@ -183,6 +246,7 @@ class GeneratedSolution(BaseModel):
 class GenerateTextBody(BaseModel):
     text: str
     method: Optional[str] = "knowledgeBase"  # 'knowledgeBase' or 'llmOnly'
+    knowledge_base: Optional[str] = None  # 'AIonOS' for SharePoint, None for uploaded solutions
 
 class ProductRecommendation(BaseModel):
     name: str
@@ -193,9 +257,16 @@ class ProductRecommendation(BaseModel):
 class RecommendBody(BaseModel):
     text: str
  
+class RetrievalInfo(BaseModel):
+    knowledge_base: Optional[str] = None
+    top_k: Optional[int] = None
+    retrieved_count: int = 0
+    filenames: List[str] = []
+
 class SolutionWithRecommendations(BaseModel):
     solution: GeneratedSolution
     recommendations: List[ProductRecommendation] = []
+    retrieval_info: Optional[RetrievalInfo] = None
 
 # Document extraction functions
 def extract_text_from_pdf(file_path: str) -> str:
@@ -480,14 +551,46 @@ def render_mermaid_to_image(mermaid_code: str) -> str | None:
         return None
 
 # LLM Processing
-async def analyze_rfp_with_groq(rfp_text: str,use_rag: bool = True) -> GeneratedSolution:
-    """Analyze RFP text using Groq and generate solution"""
+async def analyze_rfp_with_groq(rfp_text: str, use_rag: bool = True, knowledge_base: Optional[str] = None):
+    """Analyze RFP text using Groq and generate solution
+    
+    Args:
+        rfp_text: Input RFP text or problem statement
+        use_rag: Whether to use RAG retrieval
+        knowledge_base: Optional knowledge base filter ('AIonOS' for SharePoint, None for uploaded solutions)
+    """
 
     #step1: Retrieve relevant documents from vector store
     retrieved_docs = []
     if use_rag:
         try:
-            retrieved_docs = VECTOR_STORE.similarity_search(rfp_text, k=5)
+            # If knowledge_base is specified, use Pinecone client directly for metadata filtering
+            if knowledge_base == "AIonOS":
+                try:
+                    # Use Pinecone query with metadata filter
+                    query_vector = EMBEDDING_MODEL.embed_query(rfp_text)
+                    results = pc.Index(PINECONE_INDEX_NAME).query(
+                        vector=query_vector,
+                        top_k=5,
+                        include_metadata=True,
+                        filter={"knowledge_base": {"$eq": "AIonOS"}}
+                    )
+                    # Convert to LangChain Document format
+                    from langchain.schema import Document
+                    retrieved_docs = [
+                        Document(
+                            page_content=match['metadata'].get('text', ''),
+                            metadata=match['metadata']
+                        )
+                        for match in results['matches']
+                    ]
+                    safe_print(f"Retrieved {len(retrieved_docs)} documents from AIonOS knowledge base")
+                except Exception as e:
+                    safe_print(f"Error querying Pinecone with filter: {e}, falling back to standard search")
+                    retrieved_docs = VECTOR_STORE.similarity_search(rfp_text, k=5)
+            else:
+                # Standard RAG without filter (uses uploaded solutions)
+                retrieved_docs = VECTOR_STORE.similarity_search(rfp_text, k=5)
         except Exception as e:
             safe_print(f"Error retrieving from vector store: {str(e)}")
             retrieved_docs = []
@@ -502,6 +605,24 @@ async def analyze_rfp_with_groq(rfp_text: str,use_rag: bool = True) -> Generated
         safe_print("-" * 50)
 
     context_text = "\n\n".join([doc.page_content for doc in retrieved_docs]) if retrieved_docs else "No relevant references found."
+
+    # Build retrieval metadata for UI
+    retrieval_info: Optional[RetrievalInfo] = None
+    if use_rag:
+        filenames: List[str] = []
+        try:
+            for d in retrieved_docs:
+                name = d.metadata.get('filename') or d.metadata.get('source') or d.metadata.get('file_name') or 'N/A'
+                if name and name not in filenames:
+                    filenames.append(name)
+        except Exception:
+            filenames = []
+        retrieval_info = RetrievalInfo(
+            knowledge_base=knowledge_base,
+            top_k=5,
+            retrieved_count=len(retrieved_docs),
+            filenames=filenames[:10]
+        )
     
     #step2: build prompt with references
     prompt = f"""
@@ -608,7 +729,7 @@ async def analyze_rfp_with_groq(rfp_text: str,use_rag: bool = True) -> Generated
             else:
                 safe_print("[INFO] Kroki diagram generation failed; continuing without image.")
                 solution_data["architecture_diagram_image"] = None
-            return GeneratedSolution(**solution_data)
+            return GeneratedSolution(**solution_data), retrieval_info
         
     except Exception as e:
         safe_print(f"Error with Groq API: {str(e)}")
@@ -686,7 +807,7 @@ async def analyze_rfp_with_groq(rfp_text: str,use_rag: bool = True) -> Generated
                 {"item": "Testing & QA", "cost": "₹580,000", "notes": "Automated and UAT"},
                 {"item": "Deployment & Training", "cost": "₹420,000", "notes": "Go-live and enablement"}
             ]
-        )
+        ), retrieval_info
 # Document generation functions
 def create_word_document(solution: GeneratedSolution) -> str:
     """Create a Word document from the generated solution"""
@@ -879,8 +1000,9 @@ def create_word_document(solution: GeneratedSolution) -> str:
 
 # API Endpoints
 @app.post("/api/generate-solution", response_model=SolutionWithRecommendations)
-async def generate_solution(file: UploadFile = File(...),method: str = "knowledgeBase"):
+async def generate_solution(file: UploadFile = File(...), method: str = "knowledgeBase", knowledge_base: Optional[str] = None):
     """Generate solution from uploaded RFP document"""
+    logging.getLogger("sharepoint.flow").info("generate-solution called method=%s knowledge_base=%s", method, knowledge_base)
     
     # Validate file type (PDF and DOCX only)
     allowed_types = ['application/pdf', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document']
@@ -922,12 +1044,12 @@ async def generate_solution(file: UploadFile = File(...),method: str = "knowledg
         
         # Generate solution using Groq
         if method == "llmOnly":
-            solution = await analyze_rfp_with_groq(rfp_text,use_rag=False)
+            solution, retrieval_info = await analyze_rfp_with_groq(rfp_text, use_rag=False)
         else:
-            solution = await analyze_rfp_with_groq(rfp_text,use_rag=True)
+            solution, retrieval_info = await analyze_rfp_with_groq(rfp_text, use_rag=True, knowledge_base=knowledge_base)
         
         recs = find_product_recommendations(solution.problem_statement, threshold=0.20)
-        return SolutionWithRecommendations(solution=solution, recommendations=recs)
+        return SolutionWithRecommendations(solution=solution, recommendations=recs, retrieval_info=retrieval_info)
     
     except HTTPException:
         raise
@@ -949,9 +1071,10 @@ async def generate_solution_text(body: GenerateTextBody):
     if not rfp_text:
         raise HTTPException(status_code=400, detail="Text is required")
     try:
-        solution = await analyze_rfp_with_groq(rfp_text, use_rag=(body.method != "llmOnly"))
+        logging.getLogger("sharepoint.flow").info("generate-solution-text called method=%s knowledge_base=%s", body.method, body.knowledge_base)
+        solution, retrieval_info = await analyze_rfp_with_groq(rfp_text, use_rag=(body.method != "llmOnly"), knowledge_base=body.knowledge_base)
         recs = find_product_recommendations(solution.problem_statement, threshold=0.20)
-        return SolutionWithRecommendations(solution=solution, recommendations=recs)
+        return SolutionWithRecommendations(solution=solution, recommendations=recs, retrieval_info=retrieval_info)
     except Exception as e:
         safe_print(f"FATAL ERROR in /api/generate-solution-text: {e}") 
         raise HTTPException(status_code=500, detail=f"Error generating from text: {str(e)}")
