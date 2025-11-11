@@ -1,4 +1,4 @@
-import React, {useState, useEffect,useRef} from 'react';
+import React, {useState, useEffect,useRef, useLayoutEffect} from 'react';
 import {useNavigate} from 'react-router-dom';
 import { AlertCircle, Settings, History, Upload, Building2 } from 'lucide-react';
 import FileUploader from './components/FileUploader.jsx';
@@ -41,7 +41,9 @@ const RFPSolutionGenerator = () => {
   const [showProcessPopup, setShowProcessPopup] = useState(false);
   const [processSteps, setProcessSteps] = useState([]);
   const recPopupRef = useRef(null);
+  const previewContainerRef = useRef(null);
   const [recHeight, setRecHeight] = useState(0);
+  const [processPopupTop, setProcessPopupTop] = useState(null);
   const navigate = useNavigate();
   const previewRef = useRef(null);
 
@@ -260,6 +262,31 @@ const RFPSolutionGenerator = () => {
     }
   }, [recommendations]);
 
+  useEffect(() => {
+    if (!showProcessPopup) {
+      setProcessPopupTop(null);
+    }
+  }, [showProcessPopup]);
+
+  useLayoutEffect(() => {
+    if (!showProcessPopup) {
+      return;
+    }
+    const updatePosition = () => {
+      if (previewContainerRef.current) {
+        const rect = previewContainerRef.current.getBoundingClientRect();
+        setProcessPopupTop(rect.top + window.scrollY + 16);
+      }
+    };
+    updatePosition();
+    window.addEventListener('resize', updatePosition);
+    window.addEventListener('scroll', updatePosition, true);
+    return () => {
+      window.removeEventListener('resize', updatePosition);
+      window.removeEventListener('scroll', updatePosition, true);
+    };
+  }, [showProcessPopup, solution]);
+
   return (
     <div className="min-h-screen bg-gray-50">
       {/* Header */}
@@ -476,7 +503,7 @@ const RFPSolutionGenerator = () => {
           </div>
 
           {/* Right Panel - Solution Preview */}
-          <div className="lg:col-span-2">
+          <div className="lg:col-span-2" ref={previewContainerRef}>
             <div className="bg-white rounded-lg shadow-sm border border-gray-200">
               <div className="p-6 border-b border-gray-200 flex items-center justify-between">
                 <h2 className="text-lg font-semibold text-gray-900">Generated Solution Preview</h2>
@@ -535,6 +562,8 @@ const RFPSolutionGenerator = () => {
           steps={processSteps}
           onClose={() => setShowProcessPopup(false)}
           bottomOffset={(Array.isArray(recommendations) && recommendations.length > 0) ? (80 + recHeight + 12) : 88}
+          offsetLeft={24}
+          topOffset={processPopupTop}
         />
       )}
       {/* Logout Modal */}

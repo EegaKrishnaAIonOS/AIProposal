@@ -6,8 +6,9 @@ from typing import List, Optional
 import sys
 import warnings
 import sys
-import os, json, tempfile, shutil
+import os, json, tempfile, shutil, re, math
 from datetime import datetime
+from urllib.parse import quote
 from sqlalchemy.orm import Session
 from database import get_db, Solution as DBSolution
 import asyncio
@@ -18,10 +19,12 @@ import PyPDF2
 from docx import Document
 from docx.shared import Inches, Pt
 from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_TAB_ALIGNMENT, WD_TAB_LEADER
+from docx.enum.table import WD_TABLE_ALIGNMENT, WD_ALIGN_VERTICAL
 from docx.oxml.shared import OxmlElement, qn
 import requests,base64
 from fastapi import Request
 import asyncio
+import time
 
 from pinecone import Pinecone
 from langchain_pinecone import PineconeVectorStore
@@ -116,10 +119,11 @@ except Exception as e:
 # --- END NEW PINECONE CONFIGURATION ---
 
 # New: environment-driven configuration
-GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
+GROQ_MODEL = os.getenv("GROQ_MODEL", "moonshotai/kimi-k2-instruct")
 ALLOWED_ORIGINS = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000").split(",") if o.strip()]
 MAX_FILE_SIZE_MB = int(os.getenv("MAX_FILE_SIZE_MB", "10"))
 MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
+AIONOS_COMPACT_OUTPUT = (os.getenv("AIONOS_COMPACT_OUTPUT", "true").lower() in ("1","true","yes"))
 
 app.add_middleware(
     CORSMiddleware,
@@ -129,7 +133,7 @@ app.add_middleware(
     allow_headers=["*"]
 )
 
-groq_client = Groq(api_key=GROQ_API_KEY)
+groq_client = Groq(api_key=GROQ_API_KEY, max_retries=0)
 
 # --- SharePoint Auto-Sync Configuration ---
 SHAREPOINT_AUTO_SYNC_ENABLED = (os.getenv("SHAREPOINT_AUTO_SYNC_ENABLED", "true").lower() in ("1","true","yes"))
@@ -521,38 +525,593 @@ def _insert_toc(doc: Document) -> None:
     r3 = p.add_run(); r3._r.append(fld_char('separate'))
     r4 = p.add_run(); r4._r.append(fld_char('end'))
 
-def render_mermaid_to_image(mermaid_code: str) -> str | None:
-    """Render Mermaid code to a temporary PNG file using Kroki API."""
-    if not mermaid_code or not mermaid_code.strip():
-        raise ValueError("No Mermaid code provided")
+# --- Helper Functions for Content Expansion ---
+
+def _len_ok(text: str, min_len: int) -> bool:
+    """Check if text meets minimum length requirement."""
+    return len((text or "").strip()) >= min_len
+
+def _calculate_total_response_size(solution_data: dict) -> int:
+    """Calculate total character count of all fields in solution."""
+    total = 0
+    total += len(solution_data.get("problem_statement", ""))
+    total += sum(len(str(c)) for c in solution_data.get("key_challenges", []))
+    total += sum(len(str(step.get("title", ""))) + len(str(step.get("description", ""))) 
+                 for step in solution_data.get("solution_approach", []))
+    total += sum(len(str(obj)) for obj in solution_data.get("objectives", []))
+    total += sum(len(str(crit)) for crit in solution_data.get("acceptance_criteria", []))
+    total += sum(len(str(m.get("description", ""))) for m in solution_data.get("milestones", []))
+    total += sum(len(str(kpi.get("metric", ""))) + len(str(kpi.get("target", ""))) 
+                 for kpi in solution_data.get("key_performance_indicators", []))
+    total += sum(len(str(cost.get("item", ""))) + len(str(cost.get("notes", ""))) 
+                 for cost in solution_data.get("cost_analysis", []))
+    return total
+
+def _needs_expansion(sol: dict) -> bool:
+    """Check if solution needs expansion based on quality requirements."""
+    # Problem statement: minimum 2,500 characters
+    if not _len_ok(sol.get("problem_statement", ""), 2500):
+        return True
     
-    payload = {
-        "diagram_source": mermaid_code,
-        "diagram_type": "mermaid",
-        "output_format": "png"
-    }
+    # Key challenges: 14-20 items, each minimum 1,500 characters
+    challenges = sol.get("key_challenges", [])
+    if len(challenges) < 14:
+        return True
+    if any(len((c or "").strip()) < 1500 for c in challenges):
+        return True
+    
+    # Solution approach: ≥8 steps, each description minimum 2,000 characters
+    approach = sol.get("solution_approach", [])
+    if len(approach) < 8:
+        return True
+    if any(len((step.get("description") or "").strip()) < 2000 for step in approach):
+        return True
+    
+    # Objectives: 12-16 items, each minimum 1,000 characters
+    objectives = sol.get("objectives", [])
+    if len(objectives) < 12 or len(objectives) > 16:
+        return True
+    if any(len((obj or "").strip()) < 1000 for obj in objectives):
+        return True
+    
+    # Acceptance criteria: 18-24 items, each minimum 1,200 characters
+    criteria = sol.get("acceptance_criteria", [])
+    if len(criteria) < 18 or len(criteria) > 24:
+        return True
+    if any(len((crit or "").strip()) < 1200 for crit in criteria):
+        return True
+    
+    # Milestones: 8-12 phases, each minimum 500 characters
+    milestones = sol.get("milestones", [])
+    if len(milestones) < 8 or len(milestones) > 12:
+        return True
+    if any(len((m.get("description") or "").strip()) < 500 for m in milestones):
+        return True
+    
+    # KPIs: minimum 6 items
+    kpis = sol.get("key_performance_indicators", [])
+    if len(kpis) < 6:
+        return True
+    
+    # Cost analysis: minimum 6 items
+    costs = sol.get("cost_analysis", [])
+    if len(costs) < 6:
+        return True
+    
+    return False
+
+def _extract_and_parse_json(response_text: str) -> dict:
+    """Extract and parse JSON from LLM response with aggressive error handling."""
+    # Try fenced JSON first
+    json_start = response_text.find("```json")
+    json_end = response_text.rfind("```")
+    if json_start != -1 and json_end != -1 and json_end > json_start:
+        json_str = response_text[json_start + len("```json"):json_end].strip()
+    else:
+        # Try mermaid fence
+        json_start = response_text.find("```mermaid")
+        if json_start != -1:
+            json_end = response_text.rfind("```", json_start + 10)
+            if json_end > json_start:
+                json_str = response_text[json_start + len("```mermaid"):json_end].strip()
+            else:
+                json_str = response_text[json_start + len("```mermaid"):].strip()
+        else:
+            # Fallback: try to slice from first { to last }
+            brace_start = response_text.find('{')
+            brace_end = response_text.rfind('}')
+            if brace_start == -1 or brace_end == -1:
+                raise ValueError("No JSON found in response")
+            json_str = response_text[brace_start:brace_end+1]
+    
+    # Aggressive pre-fixing for common errors
+    json_str = json_str.strip()
+    if not json_str.startswith('{'):
+        # Try to find first {
+        first_brace = json_str.find('{')
+        if first_brace != -1:
+            json_str = json_str[first_brace:]
+    
+    # Remove trailing commas before closing braces/brackets
+    json_str = re.sub(r',(\s*[}\]])', r'\1', json_str)
     
     try:
-        response = requests.post("https://kroki.io", json=payload, timeout=10)
-        if response.status_code == 200:
-            temp_dir = tempfile.gettempdir()
-            image_path = os.path.join(
-                temp_dir,
-                f'architecture_diagram_{datetime.now().strftime("%Y%m%d_%H%M%S")}.png'
-            )
+        return json.loads(json_str)
+    except json.JSONDecodeError as e:
+        safe_print(f"[WARN] JSON parse error: {e}")
+        safe_print(f"[DEBUG] JSON string (first 500 chars): {json_str[:500]}")
+        # Attempt automatic repair if library available
+        try:
+            from json_repair import repair_json  # type: ignore
+
+            repaired = repair_json(json_str)
+            if repaired and repaired != json_str:
+                safe_print("[INFO] JSON repair applied successfully.")
+                return json.loads(repaired)
+        except ModuleNotFoundError:
+            safe_print("[INFO] json_repair library not available; skipping repair.")
+        except Exception as repair_exc:
+            safe_print(f"[WARN] JSON repair failed: {repair_exc}")
+        raise
+
+def _expand_solution_json(solution_data: dict, rfp_text: str) -> dict:
+    """Expand solution JSON to meet professional-grade detail requirements."""
+    improvement_prompt = f"""
+You are improving a technical proposal JSON to professional-grade depth.
+
+CRITICAL REQUIREMENTS - MINIMUM CHARACTER COUNTS:
+- problem_statement: MINIMUM 2500 characters; MUST be multi-paragraph prose with detailed analysis
+- key_challenges: MUST be 14–20 items; each item MINIMUM 1500 characters (8–12 sentences per challenge)
+- solution_approach: MUST be ≥8 steps; each step's description MINIMUM 2000 characters (10–15 sentences per step)
+- objectives: MUST be 12–16 items; each item MINIMUM 1000 characters (5–8 sentences per objective)
+- acceptance_criteria: MUST be 18–24 items; each item MINIMUM 1200 characters (6–10 sentences per criterion)
+- milestones: MUST be 8–12 phases; each description MINIMUM 500 characters
+- key_performance_indicators: MUST be ≥6 items with detailed metrics
+- cost_analysis: MUST be ≥6 items with detailed breakdowns
+- milestones array MUST contain objects with keys "phase", "duration", "description" (no plain strings)
+- cost_analysis array MUST contain objects with keys "item", "cost", "notes" (no plain strings)
+
+RFP Context (for depth):
+{rfp_text[:6000]}
+
+Current Solution JSON (improve this):
+{json.dumps(solution_data, indent=2)[:15000]}
+
+IMPORTANT:
+- Keep the EXACT same JSON schema/structure
+- Expand content to meet ALL minimum character counts above
+- Add domain-specific technical details and jargon where appropriate
+- Make descriptions comprehensive and professional
+- Do NOT change field names or structure
+- Respond ONLY with valid JSON (no fences, no explanations)
+"""
+    
+    try:
+        response = groq_client.chat.completions.create(
+            model=GROQ_MODEL,
+            messages=[
+                {"role": "system", "content": "You improve JSON to meet professional-grade detail. Output ONLY valid JSON. No fences, no comments, no explanations."},
+                {"role": "user", "content": improvement_prompt}
+            ],
+            temperature=0.6,
+            max_tokens=10000,
+        )
+        
+        response_text = response.choices[0].message.content or ""
+        expanded = _extract_and_parse_json(response_text)
+        
+        # Validate all required keys are present
+        required_keys = ["title", "date", "problem_statement", "key_challenges", "solution_approach", 
+                        "milestones", "technical_stack", "objectives", "acceptance_criteria", 
+                        "resources", "cost_analysis", "key_performance_indicators"]
+        for key in required_keys:
+            if key not in expanded:
+                safe_print(f"[WARN] Missing key '{key}' in expanded solution, using original")
+                expanded[key] = solution_data.get(key)
+        
+        return expanded
+    except Exception as e:
+        safe_print(f"[WARN] Expansion failed: {e}, returning original")
+        return solution_data
+
+# --- Helper Functions for Diagram Quality ---
+
+def _validate_mermaid_syntax(code: str) -> bool:
+    """Basic validation of Mermaid syntax."""
+    if not code or not code.strip():
+        return False
+    code_lower = code.lower().strip()
+    # Must start with graph, flowchart, or erDiagram
+    if not (code_lower.startswith("graph ") or code_lower.startswith("flowchart ") or 
+            code_lower.startswith("erdiagram")):
+        return False
+    return True
+
+_MERMAID_ID_SAFE = re.compile(r'[^A-Za-z0-9_]')
+
+
+def _sanitize_mermaid_identifier(token: str, fallback_prefix: str = "Node") -> str:
+    """Normalize Mermaid identifiers to alphanumeric/underscore and avoid leading digits."""
+    token = (token or "").strip()
+    if not token:
+        return fallback_prefix
+    cleaned = _MERMAID_ID_SAFE.sub("_", token)
+    cleaned = cleaned.lstrip("_")
+    if not cleaned:
+        cleaned = fallback_prefix
+    if cleaned[0].isdigit():
+        cleaned = f"{fallback_prefix}{cleaned}"
+    return cleaned
+
+
+def _sanitize_mermaid_code(code: str | None) -> str | None:
+    """Produce safer Mermaid code by normalizing identifiers and removing fences."""
+    if not code:
+        return code
+
+    text = str(code).strip()
+    if text.startswith("```"):
+        end_idx = text.rfind("```")
+        if end_idx > 0:
+            inner = text[3:end_idx].strip()
+            if inner.lower().startswith(("json", "mermaid")):
+                inner = inner.split("\n", 1)[1] if "\n" in inner else ""
+            text = inner or text
+    if text.lower().startswith("mermaid"):
+        text = text[7:].strip()
+
+    text = text.replace("\r\n", "\n")
+
+    lines: list[str] = []
+    subgraph_pattern = re.compile(r"^(\s*subgraph\s+)([^\s]+)(.*)$", re.IGNORECASE)
+    node_pattern = re.compile(
+        r"^(\s*)([A-Za-z0-9_-]+)(\s*)(\[[^\]]+\]|\([^\)]+\)|\(\[[^\]]+\]\)|\{\{[^}]+\}\}|<[^>]+>)(.*)$"
+    )
+    edge_pattern = re.compile(r"([A-Za-z0-9_-]+)(\s*[-.]+(?:\>|o\>|x\>|-\||\|>|\>|)\|?.*?\|?)([A-Za-z0-9_-]+)")
+
+    for original_line in text.split("\n"):
+        line = original_line
+        match = subgraph_pattern.match(line.strip())
+        if match:
+            identifier = _sanitize_mermaid_identifier(match.group(2), "Subgraph")
+            line = f"{match.group(1)}{identifier}{match.group(3)}"
+        else:
+            m = node_pattern.match(line)
+            if m:
+                identifier = _sanitize_mermaid_identifier(m.group(2))
+                line = f"{m.group(1)}{identifier}{m.group(3)}{m.group(4)}{m.group(5)}"
+
+        def _edge_replacer(edge_match: re.Match[str]) -> str:
+            src = _sanitize_mermaid_identifier(edge_match.group(1))
+            arrow = edge_match.group(2)
+            dest = _sanitize_mermaid_identifier(edge_match.group(3))
+            return f"{src}{arrow}{dest}"
+
+        line = edge_pattern.sub(_edge_replacer, line)
+        lines.append(line)
+
+    sanitized = "\n".join(lines).strip()
+    if not sanitized.lower().startswith(("flowchart", "graph", "erdiagram")):
+        sanitized = f"flowchart TD\n{sanitized}"
+    return sanitized
+
+
+def _diagram_is_basic(mermaid_code: str) -> bool:
+    """Check if diagram is too basic (needs improvement)."""
+    if not mermaid_code or not isinstance(mermaid_code, str):
+        return True
+    
+    code = mermaid_code.strip()
+    if not _validate_mermaid_syntax(code):
+        return True
+    
+    # Count nodes (approximate by counting '[')
+    node_count = code.count('[')
+    if node_count < 12:
+        return True
+    
+    # Check for subgraphs
+    code_lower = code.lower()
+    has_subgraph = ('subgraph' in code_lower and 'end' in code_lower)
+    if not has_subgraph:
+        return True
+    
+    return False
+
+def _improve_diagram_mermaid(rfp_text: str, current: str) -> str:
+    """Improve a basic Mermaid diagram to professional-grade."""
+    prompt = f"""
+You will output ONLY valid Mermaid flowchart code for a professional system architecture diagram.
+
+CRITICAL SYNTAX RULES (MUST FOLLOW):
+- Start with: flowchart TD or graph TD
+- Use subgraphs: subgraph LABEL[...] ... end (must balance)
+- Node IDs: simple alphanumeric only (e.g., WebApp, UserSvc, PrimaryDB)
+- NO spaces or hyphens in node IDs
+- Edges: use --> or -->|Label| only
+- NO comments, NO code fences, NO explanations
+- Apply classDef styling at the end if needed
+
+RFP Context (for domain-specific architecture):
+{rfp_text[:4000]}
+
+Current Diagram (fix and improve):
+{current[:1500]}
+
+REQUIREMENTS:
+- Minimum 15 nodes showing realistic system components
+- Use 5-7 subgraphs for layers: Client, Edge, Gateway, Services, Data, Infrastructure
+- All nodes MUST be connected (no isolated nodes)
+- Show actual data flow and interactions
+- Use domain-appropriate technologies (AWS/Azure/GCP, databases, queues, etc.)
+- Include AI/ML components if applicable (LLMs, model serving, etc.)
+
+Output ONLY the Mermaid code, nothing else.
+"""
+    
+    try:
+        response = groq_client.chat.completions.create(
+            model=GROQ_MODEL,
+            messages=[
+                {"role": "system", "content": "Output only valid Mermaid flowchart code. No fences, no comments, no explanations."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.5,
+            max_tokens=1500,
+        )
+        
+        text = response.choices[0].message.content or ""
+        
+        # Strip code fences if present
+        text = text.strip()
+        if text.startswith("```"):
+            si = text.find("```")
+            ei = text.rfind("```")
+            if ei > si:
+                text = text[si+3:ei].replace("mermaid", "").strip()
+        
+        # Validate
+        if _validate_mermaid_syntax(text):
+            return text
+        else:
+            safe_print("[WARN] Improved diagram failed validation, using original")
+            return current
+    except Exception as e:
+        safe_print(f"[WARN] Diagram improvement failed: {e}, using original")
+        return current
+
+def _normalize_solution_shapes(solution: dict) -> dict:
+    """Ensure solution data conforms to expected schema for Pydantic validation."""
+    if not isinstance(solution, dict):
+        return {}
+
+    normalized = dict(solution)
+
+    # Normalize key challenges to list of strings
+    challenges: List[str] = []
+    for item in solution.get("key_challenges") or []:
+        if isinstance(item, dict):
+            text = (item.get("description") or item.get("text") or "").strip()
+        else:
+            text = str(item).strip()
+        if text:
+            challenges.append(text)
+    normalized["key_challenges"] = challenges
+
+    # Normalize solution approach to list of dicts with title & description
+    approach: List[dict] = []
+    for idx, step in enumerate(solution.get("solution_approach") or []):
+        if isinstance(step, dict):
+            title = str(step.get("title") or step.get("phase") or f"Step {idx + 1}").strip()
+            description = str(step.get("description") or step.get("details") or "").strip()
+        else:
+            text = str(step).strip()
+            title = f"Step {idx + 1}"
+            description = text
+        approach.append({"title": title or f"Step {idx + 1}", "description": description})
+    normalized["solution_approach"] = approach
+
+    # Normalize milestones to list of dicts with phase, duration, description
+    milestones: List[dict] = []
+    for idx, milestone in enumerate(solution.get("milestones") or []):
+        if isinstance(milestone, dict):
+            phase = str(milestone.get("phase") or milestone.get("title") or f"Phase {idx + 1}").strip()
+            duration = str(milestone.get("duration") or milestone.get("timeline") or "").strip()
+            description = str(milestone.get("description") or milestone.get("details") or "").strip()
+        else:
+            text = str(milestone).strip()
+            phase = text[:80] or f"Phase {idx + 1}"
+            duration = ""
+            description = text
+        milestones.append({
+            "phase": phase or f"Phase {idx + 1}",
+            "duration": duration,
+            "description": description
+        })
+    normalized["milestones"] = milestones
+
+    # Normalize cost analysis to list of dicts with item, cost, notes
+    cost_items: List[dict] = []
+    for idx, cost in enumerate(solution.get("cost_analysis") or []):
+        if isinstance(cost, dict):
+            item_name = str(cost.get("item") or cost.get("title") or cost.get("name") or f"Cost Item {idx + 1}").strip()
+            amount = str(cost.get("cost") or cost.get("amount") or "").strip()
+            notes = str(cost.get("notes") or cost.get("description") or "").strip()
+        else:
+            text = str(cost).strip()
+            item_name = text or f"Cost Item {idx + 1}"
+            amount = ""
+            notes = ""
+        cost_items.append({
+            "item": item_name or f"Cost Item {idx + 1}",
+            "cost": amount,
+            "notes": notes
+        })
+    normalized["cost_analysis"] = cost_items
+
+    # Normalize objectives and acceptance criteria to list of strings
+    normalized["objectives"] = [str(obj).strip() for obj in (solution.get("objectives") or []) if str(obj).strip()]
+    normalized["acceptance_criteria"] = [str(crit).strip() for crit in (solution.get("acceptance_criteria") or []) if str(crit).strip()]
+
+    # Normalize technical stack to strings
+    normalized["technical_stack"] = [str(tech).strip() for tech in (solution.get("technical_stack") or []) if str(tech).strip()]
+
+    # Normalize KPIs to dicts
+    kpis: List[dict] = []
+    for idx, kpi in enumerate(solution.get("key_performance_indicators") or []):
+        if isinstance(kpi, dict):
+            metric = str(kpi.get("metric") or f"KPI {idx + 1}").strip()
+            target = str(kpi.get("target") or "").strip()
+            measurement = str(kpi.get("measurement_method") or kpi.get("method") or "").strip()
+            frequency = str(kpi.get("frequency") or kpi.get("cadence") or "").strip()
+        else:
+            text = str(kpi).strip()
+            metric = text or f"KPI {idx + 1}"
+            target = ""
+            measurement = ""
+            frequency = ""
+        kpis.append({
+            "metric": metric or f"KPI {idx + 1}",
+            "target": target,
+            "measurement_method": measurement,
+            "frequency": frequency or None
+        })
+    normalized["key_performance_indicators"] = kpis
+
+    # Normalize resources to dicts
+    resources: List[dict] = []
+    for idx, res in enumerate(solution.get("resources") or []):
+        if isinstance(res, dict):
+            role = str(res.get("role") or res.get("title") or f"Role {idx + 1}").strip()
+            count_raw = res.get("count")
+            try:
+                count = int(count_raw)
+            except (TypeError, ValueError):
+                count = 0
+            experience_raw = res.get("years_of_experience")
+            try:
+                experience = int(experience_raw) if experience_raw not in (None, "") else None
+            except (TypeError, ValueError):
+                experience = None
+            responsibilities = str(res.get("responsibilities") or res.get("description") or "").strip()
+        else:
+            text = str(res).strip()
+            role = text or f"Role {idx + 1}"
+            count = 0
+            experience = None
+            responsibilities = text
+        resources.append({
+            "role": role or f"Role {idx + 1}",
+            "count": count,
+            "years_of_experience": experience,
+            "responsibilities": responsibilities
+        })
+    normalized["resources"] = resources
+
+    return normalized
+
+def render_mermaid_to_image(mermaid_code: str) -> str | None:
+    """Render Mermaid code to a temporary PNG file using mermaid.ink API with QuickChart fallback."""
+    if not mermaid_code or not mermaid_code.strip():
+        return None
+    
+    # Clean code
+    code = _sanitize_mermaid_code(mermaid_code) or ""
+    code = code.strip()
+    if code.startswith('```'):
+        si = code.find('```')
+        ei = code.rfind('```')
+        if ei > si:
+            code = code[si+3:ei].replace('mermaid', '').strip()
+    
+    code = code.strip()
+    if not code:
+        return None
+    
+    temp_dir = tempfile.gettempdir()
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    
+    # Primary method: mermaid.ink API
+    try:
+        # Base64 URL-safe encode
+        encoded = base64.urlsafe_b64encode(code.encode('utf-8')).decode('utf-8').rstrip('=')
+        url = f"https://mermaid.ink/img/{encoded}"
+        
+        response = requests.get(url, timeout=15)
+        if response.status_code == 200 and response.content[:4] == b'\x89PNG':
+            image_path = os.path.join(temp_dir, f'architecture_diagram_{timestamp}.png')
             with open(image_path, "wb") as f:
                 f.write(response.content)
             return image_path
-        else:
-            safe_print(f"[WARN] Kroki API error {response.status_code}: {response.text[:100]}")
-            return None
     except Exception as e:
-        safe_print(f"[WARN] Kroki rendering failed: {str(e)}")
-        return None
+        safe_print(f"[WARN] mermaid.ink API failed: {e}, trying QuickChart fallback")
+    
+    # Fallback: QuickChart API
+    try:
+        encoded_code = quote(code)
+        url = f"https://quickchart.io/mermaid?c={encoded_code}"
+        
+        response = requests.get(url, timeout=15)
+        if response.status_code == 200 and response.content[:4] == b'\x89PNG':
+            image_path = os.path.join(temp_dir, f'architecture_diagram_{timestamp}.png')
+            with open(image_path, "wb") as f:
+                f.write(response.content)
+            return image_path
+    except Exception as e:
+        safe_print(f"[WARN] QuickChart API also failed: {e}")
+    
+    return None
+
+# --- Async LLM Completion Helper ---
+_RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
+_LLM_RETRY_DELAY_SECONDS = 3
+_LLM_MAX_RETRIES = 8
+
+
+def _should_retry_exception(exc: Exception) -> bool:
+    status = getattr(exc, "status_code", None) or getattr(exc, "http_status", None)
+    if status in _RETRYABLE_STATUS_CODES:
+        return True
+    message = str(exc).lower()
+    if "429" in message or "rate limit" in message:
+        return True
+    if any(term in message for term in ["temporarily unavailable", "timeout", "overload"]):
+        return True
+    return False
+
+
+async def async_llm_complete(messages: List[dict], temperature: float = 0.3, max_tokens: int = 8000) -> str:
+    """Async wrapper for Groq LLM completion with custom retry backoff."""
+
+    def _call_with_retries() -> str:
+        last_error: Exception | None = None
+        for attempt in range(1, _LLM_MAX_RETRIES + 1):
+            try:
+                response = groq_client.chat.completions.create(
+                    model=GROQ_MODEL,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens
+                )
+                return response.choices[0].message.content or ""
+            except Exception as exc:  # noqa: BLE001
+                last_error = exc
+                if attempt >= _LLM_MAX_RETRIES or not _should_retry_exception(exc):
+                    raise
+                safe_print(
+                    f"[WARN] LLM request failed (attempt {attempt}/{_LLM_MAX_RETRIES}); "
+                    f"retrying in {_LLM_RETRY_DELAY_SECONDS} seconds..."
+                )
+                time.sleep(_LLM_RETRY_DELAY_SECONDS)
+        if last_error:
+            raise last_error
+        raise RuntimeError("LLM completion failed without raising an explicit exception")
+
+    return await asyncio.to_thread(_call_with_retries)
 
 # LLM Processing
 async def analyze_rfp_with_groq(rfp_text: str, use_rag: bool = True, knowledge_base: Optional[str] = None):
-    """Analyze RFP text using Groq and generate solution
+    """Analyze RFP text using Groq and generate solution with multi-stage expansion
     
     Args:
         rfp_text: Input RFP text or problem statement
@@ -560,7 +1119,7 @@ async def analyze_rfp_with_groq(rfp_text: str, use_rag: bool = True, knowledge_b
         knowledge_base: Optional knowledge base filter ('AIonOS' for SharePoint, None for uploaded solutions)
     """
 
-    #step1: Retrieve relevant documents from vector store
+    # Step 1: Retrieve relevant documents from vector store
     retrieved_docs = []
     if use_rag:
         try:
@@ -624,97 +1183,368 @@ async def analyze_rfp_with_groq(rfp_text: str, use_rag: bool = True, knowledge_b
             filenames=filenames[:10]
         )
     
-    #step2: build prompt with references
+    # Step 2: Build enhanced prompt with detailed architecture diagram instructions
+    # Analyze domain hints for architecture customization
+    domain_hints = ""
+    rfp_lower = rfp_text.lower()
+    if any(kw in rfp_lower for kw in ["ai", "machine learning", "ml", "llm", "neural", "model"]):
+        domain_hints += "Domain: AI/ML - Include LLM inference, model serving, training pipelines, vector databases.\n"
+    if any(kw in rfp_lower for kw in ["data pipeline", "etl", "data processing", "analytics"]):
+        domain_hints += "Domain: Data Pipeline - Include data ingestion, transformation, storage, analytics layers.\n"
+    if any(kw in rfp_lower for kw in ["healthcare", "medical", "patient", "hospital"]):
+        domain_hints += "Domain: Healthcare - Include HIPAA compliance, patient data security, medical records systems.\n"
+    if any(kw in rfp_lower for kw in ["e-commerce", "retail", "shopping", "cart", "payment"]):
+        domain_hints += "Domain: E-commerce - Include payment gateways, inventory management, recommendation engines.\n"
+    
     prompt = f"""
-    You are an expert technical consultant specializing in creating detailed technical proposals for RFPs. Try to identify the field/domain of the RFP and tailor the solution accordingly. 
-    While drafting the solution, ensure to incorporate the domain knowledge, and include proper jargoan.
-    Use the uploaded reference solutions (if relevant) as inspiration, but adapt to the new RFP.
+You are an expert technical consultant producing a compact, production-ready proposal JSON.
+STRICT FORMAT AND BREVITY — follow EXACTLY. ENSURE RICHNESS PER LINE (about 18–28 words per line, 2 short sentences if helpful):
 
-    Based on the following RFP document, generate a comprehensive technical proposal that follows this structure:
-    
-    1. Title
-    2. Problem Statement
-    3. Key Challenges (3-5 items)
-    4. Solution Approach (4-6 steps with title and description for each)
-    5. Architecture Diagram (Generate valid **Mermaid syntax only**,suitable  for a  component diagram  representing the system architecture that includes the AI components like LLMs etc, if applicable.
-       Use proper syntax like:
-       graph TD
-         A[Client] --> B[Server]
-         B --> C[Database]
-       Do not include any explanations, prose, code fences, or comments.  
-       Only the raw Mermaid code as a string.)
-    6. Milestones (5-8 phases with duration and description)
-    7. Technical Stack
-    8. Objectives
-    9. Acceptance Criteria
-    10. Resources (list of roles with counts, years_of_experience, responsibilities)
-    11. Cost Analysis (INR currency; list of cost items with cost and optional notes)
-    12. Key Performance Indicators (4-6 KPIs with metric name, target value, measurement method, and measurement frequency)
-    
-    Respond ONLY with a single fenced JSON block using triple backticks and the json language tag. No prose before or after.
-    
-    RFP Content:
-    {rfp_text[:8000]}
+- problem_statement: EXPLAIN TECHNICALLY IN 10 LINES MAX. Use newline separators.
+- key_challenges: EXACTLY 7 items; each item is ≤5 lines (each line ~18–28 words, technical).
+- solution_approach: EXACTLY 7 steps; each step has "title" and "description" (≤5 lines; each line ~18–28 words, technical).
+- architecture_diagram: PROFESSIONAL Mermaid (flowchart TD), 12–18 nodes, 5–7 subgraphs (Client, Edge, Gateway, Services, Data, Infrastructure), all nodes connected. NO code fences.
+- milestones: EXACTLY 7 phases. Each has "phase", "duration", "description" (≤4 lines; each line ~16–24 words).
+- technical_stack: 10–20 items, only relevant technologies.
+- objectives: EXACTLY 7 items; each ≤5 lines (each line ~18–28 words).
+- acceptance_criteria: EXACTLY 7 items; each ≤4 lines (each line ~16–24 words, measurable).
+- resources: 6–10 roles with "role", "count", "years_of_experience", "responsibilities" (concise).
+- cost_analysis: 6–10 items with "item", "cost" (INR string like "₹750,000"), "notes".
+- key_performance_indicators: EXACTLY 10 with "metric","target","measurement_method","frequency".
 
-    Reference Solutions ( from previous uploads):
-    {context_text[:6000]}
+CRITICAL RULES:
+- Respond with ONE fenced ```json block (valid JSON).
+- Keep content concise within the specified line limits.
+- Use domain-appropriate details inferred from the RFP and retrieved context.
+- Do not omit any keys in the schema below.
+
+RFP Context (shortened):
+{rfp_text[:6000]}
+
+Retrieved References:
+{context_text[:6000]}
+
+SCHEMA (exact keys):
+{{
+    "title": "Solution title",
+    "date": "{datetime.now().strftime('%B %Y')}",
+  "problem_statement": "Line1\\nLine2\\n... up to 10 lines",
+  "key_challenges": ["Up to 5 lines per challenge (7 items total)"],
+  "solution_approach": [{{"title":"Step 1","description":"Up to 5 lines"}}, {{}} ... 7 items],
+  "architecture_diagram": "flowchart TD\\nsubgraph ...",
+  "milestones": [{{"phase":"Phase 1","duration":"X weeks","description":"Up to 4 lines"}} ... 7 items],
+  "technical_stack": ["Tech1","Tech2", "..."],
+  "objectives": ["Up to 5 lines per objective (7 items total)"],
+  "acceptance_criteria": ["Up to 4 lines per criterion (7 items total)"],
+  "resources": [{{"role":"Role","count":1,"years_of_experience":5,"responsibilities":"Concise"}} ...],
+  "cost_analysis": [{{"item":"Item","cost":"₹120,000","notes":"Concise"}} ...],
+  "key_performance_indicators": [{{"metric":"Metric","target":"Target","measurement_method":"Method","frequency":"Monthly"}} ... 10 items]
+}}
+"""
     
-    The JSON structure must be exactly:
-    {{
-        "title": "Solution title",
-        "date": "{datetime.now().strftime('%B %Y')}",
-        "problem_statement": "Problem description",
-        "key_challenges": ["challenge1", "challenge2"],
-        "solution_approach": [
-            {{"title": "Step 1: Title", "description": "Detailed description"}}
-        ],
-        "architecture_diagram": "graph TD\\nA[Client] --> B[Server]\\n...", //Raw mermaid code as string
-        "milestones": [
-            {{"phase": "Phase Name", "duration": "X weeks", "description": "Phase description"}}
-        ],
-        "technical_stack": ["Technology1", "Technology2"],
-        "objectives": ["Objective1", "Objective2"],
-        "acceptance_criteria": ["Criteria1", "Criteria2"],
-        "resources": [
-            {{"role": "Role Name", "count": 3, "years_of_experience": 5, "responsibilities": "Key responsibilities"}}
-        ],
-        "cost_analysis": [
-            {{"item": "Item name", "cost": "₹750,000", "notes": "Optional note"}}
-        ],
-        "key_performance_indicators": [
-            {{"metric": "KPI Name", "target": "Target value", "measurement_method": "How it will be measured", "frequency": "Measurement frequency"}}
-        ]
-    }}
-    """
-    #step3: call groq LLM as before
+    # Step 3: Initial LLM generation
     try:
-        response = groq_client.chat.completions.create(
-            model=GROQ_MODEL,
-            messages=[
-                {"role": "system", "content": "You are a technical proposal expert. Always respond with valid JSON inside a fenced ```json block."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.3,
-            max_tokens=4000
-        )
+        system_message = """You are a technical proposal expert. Always respond with valid JSON inside a fenced ```json block.
+Ensure all content meets the minimum character requirements specified in the prompt.
+Generate professional-grade, detailed content for every section."""
         
-        response_text = response.choices[0].message.content or ""
-        
-        # Robust fenced JSON extraction
-        json_start = response_text.find("```json")
-        json_end = response_text.rfind("```")
-        if json_start != -1 and json_end != -1 and json_end > json_start:
-            json_str = response_text[json_start + len("```json"):json_end].strip()
-        else:
-            # Fallback: try to slice from first { to last }
-            brace_start = response_text.find('{')
-            brace_end = response_text.rfind('}')
-            if brace_start == -1 or brace_end == -1:
-                raise ValueError("No JSON found in response")
-            json_str = response_text[brace_start:brace_end+1]
-        
-        solution_data = json.loads(json_str)
+        parse_attempts = 3
+        solution_data: dict | None = None
+        response_text: str = ""
+        for attempt in range(1, parse_attempts + 1):
+            response_text = await async_llm_complete(
+                messages=[
+                    {"role": "system", "content": system_message},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.5,  # Slightly higher for richer content
+                max_tokens=9000,
+            )
+            try:
+                solution_data = _extract_and_parse_json(response_text)
+                break
+            except Exception as parse_exc:
+                safe_print(f"[WARN] Failed to parse LLM JSON (attempt {attempt}/{parse_attempts}): {parse_exc}")
+                if attempt < parse_attempts:
+                    await asyncio.sleep(1)
+                    continue
+                raise
 
+        if solution_data is None:
+            raise RuntimeError("LLM did not produce valid solution data.")
+
+        solution_data = _normalize_solution_shapes(solution_data)
+        solution_data["architecture_diagram"] = _sanitize_mermaid_code(solution_data.get("architecture_diagram"))
+        
+        # Step 4: Size check & expansion decision
+        total_size = _calculate_total_response_size(solution_data)
+        safe_print(f"[INFO] Initial response size: {total_size:,} characters")
+        
+        # Compact mode: skip heavy expansion passes
+        if not AIONOS_COMPACT_OUTPUT:
+            max_expansions = 2 if total_size < 180000 else 0
+            for attempt in range(max_expansions):
+                try:
+                    safe_print(f"[INFO] Expansion pass {attempt + 1}/{max_expansions}")
+                    solution_data = await asyncio.to_thread(_expand_solution_json, solution_data, rfp_text)
+                    solution_data = _normalize_solution_shapes(solution_data)
+                    solution_data["architecture_diagram"] = _sanitize_mermaid_code(solution_data.get("architecture_diagram"))
+                except Exception as _:
+                    break
+        
+        # Step 6: Final processing
+        # Normalize shapes (ensure data matches Pydantic schema)
+        # Apply backend limits and ensure compact completeness
+        def _format_multiline(text: str, target_lines: int) -> str:
+            text = (text or "").strip()
+            if not text:
+                return "\n".join(f"TBD line {i+1}" for i in range(target_lines))
+            lines = [l.strip() for l in text.splitlines() if l.strip()]
+            if len(lines) >= target_lines:
+                return "\n".join(lines[:target_lines])
+            sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', text) if s.strip()]
+            if len(sentences) >= target_lines:
+                return "\n".join(sentences[:target_lines])
+            words = text.split()
+            if not words:
+                return "\n".join(f"TBD line {i+1}" for i in range(target_lines))
+            chunks: list[str] = []
+            idx = 0
+            for remaining in range(target_lines, 0, -1):
+                words_left = len(words) - idx
+                if words_left <= 0:
+                    chunks.append(chunks[-1] if chunks else "TBD")
+                    continue
+                take = max(1, math.ceil(words_left / remaining))
+                chunk_words = words[idx: idx + take]
+                if not chunk_words:
+                    chunk_words = words[-1:]
+                chunks.append(" ".join(chunk_words))
+                idx += take
+            return "\n".join(chunks[:target_lines])
+
+        def _limit_lines(text: str, max_lines: int) -> str:
+            return _format_multiline(text, max_lines)
+
+        def _ensure_list_range(items: list[str], min_count: int, max_count: int, filler_prefix: str, lines: int | None = None) -> tuple[list[str], bool]:
+            out: list[str] = []
+            filler_used = False
+            for i in (items or []):
+                if len(out) >= max_count:
+                    break
+                txt = (str(i) if not isinstance(i, dict) else i.get("description") or i.get("text") or i.get("value") or "")
+                txt = txt if lines is None else _format_multiline(txt, lines)
+                if txt.strip():
+                    out.append(txt.strip())
+            while len(out) < min_count:
+                filler = f"{filler_prefix} insight {len(out)+1}"
+                filler = _format_multiline(filler, lines) if lines else filler
+                out.append(filler)
+                filler_used = True
+            return out[:max_count], filler_used
+
+        def _apply_backfill(items: list[str] | None, target: int, lines: int | None, filler_prefix: str) -> list[str]:
+            sanitized: list[str] = []
+            for entry in items or []:
+                if len(sanitized) >= target:
+                    break
+                text = str(entry)
+                sanitized.append(_format_multiline(text, lines) if lines else text.strip())
+            while len(sanitized) < target:
+                filler = f"{filler_prefix} insight {len(sanitized)+1}"
+                sanitized.append(_format_multiline(filler, lines) if lines else filler)
+            return sanitized[:target]
+
+        def _ensure_steps(steps: list[dict], target: int) -> list[dict]:
+            out = []
+            for idx, s in enumerate(steps or []):
+                if len(out) >= target: break
+                title = (s.get("title") or f"Step {idx+1}").strip()
+                desc = _format_multiline(s.get("description") or "", 5)
+                out.append({"title": title, "description": desc})
+            while len(out) < target:
+                i = len(out) + 1
+                out.append({"title": f"Step {i}", "description": "\n".join(["TBD"] * 5)})
+            return out[:target]
+
+        def _ensure_milestones(milestones: list[dict], target: int) -> list[dict]:
+            out = []
+            for idx, m in enumerate(milestones or []):
+                if len(out) >= target: break
+                out.append({
+                    "phase": (m.get("phase") or f"Phase {idx+1}").strip(),
+                    "duration": (m.get("duration") or "2 weeks").strip(),
+                    "description": _format_multiline(m.get("description") or "", 4)
+                })
+            while len(out) < target:
+                i = len(out) + 1
+                out.append({"phase": f"Phase {i}", "duration": "2 weeks", "description": "\n".join(["TBD"] * 4)})
+            return out[:target]
+
+        def _ensure_resources(resources: list[dict], target_min: int = 6, target_max: int = 10) -> list[dict]:
+            out = []
+            for r in resources or []:
+                out.append({
+                    "role": (r.get("role") or "Engineer").strip(),
+                    "count": int(r.get("count") or 1),
+                    "years_of_experience": r.get("years_of_experience") if isinstance(r.get("years_of_experience"), int) else 3,
+                    "responsibilities": (r.get("responsibilities") or "TBD").strip()
+                })
+                if len(out) >= target_max: break
+            while len(out) < target_min:
+                out.append({"role": "Engineer", "count": 1, "years_of_experience": 3, "responsibilities": "TBD"})
+            return out[:target_max]
+
+        def _ensure_costs(costs: list[dict], target_min: int = 6, target_max: int = 10) -> list[dict]:
+            out = []
+            for c in costs or []:
+                out.append({
+                    "item": (c.get("item") or "Item").strip(),
+                    "cost": (c.get("cost") or "₹100,000").strip(),
+                    "notes": (c.get("notes") or "TBD").strip()
+                })
+                if len(out) >= target_max: break
+            while len(out) < target_min:
+                i = len(out) + 1
+                out.append({"item": f"Item {i}", "cost": "₹100,000", "notes": "TBD"})
+            return out[:target_max]
+
+        def _ensure_kpis(kpis: list[dict], target: int = 10) -> list[dict]:
+            out = []
+            for k in kpis or []:
+                out.append({
+                    "metric": (k.get("metric") or f"KPI {len(out)+1}").strip(),
+                    "target": (k.get("target") or "Target").strip(),
+                    "measurement_method": (k.get("measurement_method") or "Monitoring").strip(),
+                    "frequency": (k.get("frequency") or "Monthly").strip()
+                })
+                if len(out) >= target: break
+            while len(out) < target:
+                i = len(out) + 1
+                out.append({"metric": f"KPI {i}", "target": "Target", "measurement_method": "Monitoring", "frequency": "Monthly"})
+            return out[:target]
+
+        # Enforce compact rules
+        solution_data["problem_statement"] = _limit_lines(solution_data.get("problem_statement") or "", 10)
+        key_challenges, key_fillers = _ensure_list_range(solution_data.get("key_challenges") or [], 7, 7, "Challenge", 5)
+        solution_data["key_challenges"] = key_challenges
+        solution_data["solution_approach"] = _ensure_steps(solution_data.get("solution_approach") or [], 7)
+        solution_data["milestones"] = _ensure_milestones(solution_data.get("milestones") or [], 7)
+        technical_stack, stack_fillers = _ensure_list_range(solution_data.get("technical_stack") or [], 10, 20, "Technology")
+        solution_data["technical_stack"] = technical_stack
+        objectives, obj_fillers = _ensure_list_range(solution_data.get("objectives") or [], 7, 7, "Objective", 5)
+        solution_data["objectives"] = objectives
+        acceptance, acc_fillers = _ensure_list_range(solution_data.get("acceptance_criteria") or [], 7, 7, "Criterion", 4)
+        solution_data["acceptance_criteria"] = acceptance
+        solution_data["resources"] = _ensure_resources(solution_data.get("resources") or [])
+        solution_data["cost_analysis"] = _ensure_costs(solution_data.get("cost_analysis") or [])
+        solution_data["key_performance_indicators"] = _ensure_kpis(solution_data.get("key_performance_indicators") or [])
+
+        # Lightweight backfill if placeholders detected
+        def _looks_placeholder_list(values: list[str], prefix: str) -> bool:
+            sample = " ".join((values or [])[:3]).lower()
+            if not values:
+                return True
+            if any("tbd" in (v or "").lower() for v in values):
+                return True
+            if all(prefix.lower() in (v or "").lower() for v in values):
+                return True
+            return False
+
+        async def _backfill_list(section: str, count: int, lines: int) -> list[str] | None:
+            try:
+                bf_prompt = f"""Create {count} concise items for the '{section}' section about this RFP. 
+Each item must be at most {lines} lines, with each line ~18–28 words, domain-appropriate and specific.
+Respond ONLY with a JSON array of strings of length {count}.
+Context:
+{rfp_text[:2000]}
+"""
+                text = await async_llm_complete(
+                    messages=[
+                        {"role": "system", "content": "Return valid JSON only. No prose."},
+                        {"role": "user", "content": bf_prompt},
+                    ],
+                    temperature=0.4,
+                    max_tokens=1200,
+                )
+                arr = json.loads(text)
+                if isinstance(arr, list) and len(arr) >= count:
+                    return [ _format_multiline(str(x), lines) for x in arr[:count] ]
+            except Exception:
+                return None
+            return None
+
+        async def _backfill_milestones(count: int) -> list[dict] | None:
+            try:
+                bf_prompt = f"""Create {count} milestones for this project with fields: phase, duration, description.
+Description must be ≤4 lines (each ~16–24 words).
+Respond ONLY with a JSON array of objects length {count}.
+Context:
+{rfp_text[:2000]}
+"""
+                text = await async_llm_complete(
+                    messages=[
+                        {"role": "system", "content": "Return valid JSON only. No prose."},
+                        {"role": "user", "content": bf_prompt},
+                    ],
+                    temperature=0.35,
+                    max_tokens=1200,
+                )
+                arr = json.loads(text)
+                out = []
+                if isinstance(arr, list):
+                    for m in arr[:count]:
+                        if isinstance(m, dict):
+                            out.append({
+                                "phase": str(m.get("phase") or "Phase").strip(),
+                                "duration": str(m.get("duration") or "2 weeks").strip(),
+                                "description": _format_multiline(m.get("description") or "", 4)
+                            })
+                if len(out) == count:
+                    return out
+            except Exception:
+                return None
+            return None
+
+        # Backfill objectives/acceptance/tech stack/milestones when they look placeholder
+        if key_fillers or _looks_placeholder_list(solution_data.get("key_challenges") or [], "challenge"):
+            new_list = await _backfill_list("Key Challenges", 7, 5)
+            if new_list:
+                solution_data["key_challenges"] = _apply_backfill(new_list, 7, 5, "Challenge")
+        if obj_fillers or _looks_placeholder_list(solution_data.get("objectives") or [], "objective"):
+            new_list = await _backfill_list("Objectives", 7, 5)
+            if new_list:
+                solution_data["objectives"] = _apply_backfill(new_list, 7, 5, "Objective")
+        if acc_fillers or _looks_placeholder_list(solution_data.get("acceptance_criteria") or [], "criterion"):
+            new_list = await _backfill_list("Acceptance Criteria", 7, 4)
+            if new_list:
+                solution_data["acceptance_criteria"] = _apply_backfill(new_list, 7, 4, "Criterion")
+        if stack_fillers or _looks_placeholder_list(solution_data.get("technical_stack") or [], "technology"):
+            new_list = await _backfill_list("Technical Stack (technologies/tools/services)", 15, 1)
+            if new_list:
+                count = max(12, min(len(new_list), 20))
+                solution_data["technical_stack"] = _apply_backfill(new_list, count, None, "Technology")
+        if not solution_data.get("milestones") or any("tbd" in (m.get("description") or "").lower() for m in solution_data.get("milestones") or []):
+            new_ms = await _backfill_milestones(7)
+            if new_ms:
+                solution_data["milestones"] = new_ms
+        
+        # Improve diagram if too basic
+        diagram = solution_data.get('architecture_diagram')
+        if diagram and _diagram_is_basic(diagram):
+            safe_print("[INFO] Diagram is too basic, improving...")
+            better = await asyncio.to_thread(_improve_diagram_mermaid, rfp_text, diagram)
+            if better and better.strip():
+                solution_data['architecture_diagram'] = _sanitize_mermaid_code(better)
+        else:
+            # Ensure diagram exists
+            if not solution_data.get('architecture_diagram'):
+                seed = "flowchart TD\nsubgraph CL[Client]\nWebApp[Web App]\nend\nsubgraph GW[Gateway]\nAPIGW[API Gateway]\nend\nsubgraph MS[Services]\nUserSvc[User Service]\nDataSvc[Data Service]\nAISvc[AI Service]\nend\nsubgraph DL[Data]\nDB[(Database)]\nCache[(Cache)]\nVectorDB[(Vector DB)]\nend\nWebApp --> APIGW\nAPIGW --> UserSvc\nAPIGW --> DataSvc\nAPIGW --> AISvc\nUserSvc --> DB\nDataSvc --> DB\nAISvc --> VectorDB\nUserSvc --> Cache"
+                solution_data['architecture_diagram'] = _sanitize_mermaid_code(seed)
+            else:
+                solution_data['architecture_diagram'] = _sanitize_mermaid_code(solution_data.get('architecture_diagram'))
+        
+        # Render diagram to image
         if solution_data.get("architecture_diagram"):
             image_path = render_mermaid_to_image(solution_data["architecture_diagram"])
             if image_path and os.path.exists(image_path):
@@ -727,9 +1557,10 @@ async def analyze_rfp_with_groq(rfp_text: str, use_rag: bool = True, knowledge_b
                     safe_print(f"[WARN] Error reading generated diagram: {e}")
                     solution_data["architecture_diagram_image"] = None
             else:
-                safe_print("[INFO] Kroki diagram generation failed; continuing without image.")
+                safe_print("[INFO] Diagram image generation failed; continuing without image.")
                 solution_data["architecture_diagram_image"] = None
-            return GeneratedSolution(**solution_data), retrieval_info
+        
+        return GeneratedSolution(**solution_data), retrieval_info
         
     except Exception as e:
         safe_print(f"Error with Groq API: {str(e)}")
@@ -766,7 +1597,7 @@ async def analyze_rfp_with_groq(rfp_text: str, use_rag: bool = True, knowledge_b
                     "description": "Production deployment with monitoring and support setup"
                 }
             ],
-            architecture_diagram="graph TD\nA[Client] --> B[API Gateway]\nB --> C[Microservice 1]\nB --> D[Microservice 2]",  # Fallback Mermaid code
+            architecture_diagram=_sanitize_mermaid_code("graph TD\nA[Client] --> B[API Gateway]\nB --> C[Microservice 1]\nB --> D[Microservice 2]"),
             milestones=[
                 {"phase": "Planning & Design", "duration": "2 weeks", "description": "Requirements analysis and solution design"},
                 {"phase": "Development Phase 1", "duration": "4 weeks", "description": "Core functionality development"},
@@ -868,41 +1699,99 @@ def create_word_document(solution: GeneratedSolution) -> str:
     doc.add_page_break()
     bookmark_id = 1
 
+    def _flatten_text(text: str, join_newlines: bool = True) -> str:
+        if text is None:
+            return ""
+        text = str(text)
+        if join_newlines:
+            return " ".join(text.split())
+        return text.strip()
+
+    def _add_paragraph_block(text: str, heading: bool = False) -> None:
+        if not text:
+            return
+        blocks = re.split(r'\n\s*\n', str(text).strip())
+        for block in blocks:
+            block = block.strip()
+            if not block:
+                continue
+            para = doc.add_paragraph(_flatten_text(block))
+            para.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY if not heading else WD_ALIGN_PARAGRAPH.LEFT
+            para.paragraph_format.space_after = Pt(6)
+
+    def _set_cell_alignment(cell):
+        cell.vertical_alignment = WD_ALIGN_VERTICAL.TOP
+        for paragraph in cell.paragraphs:
+            paragraph.alignment = WD_ALIGN_PARAGRAPH.LEFT
+            paragraph.paragraph_format.space_after = Pt(6)
+
     h = doc.add_heading('Problem Statement', level=1)
     _add_bookmark(h, 'sec_problem_statement', bookmark_id)
-    doc.add_paragraph(solution.problem_statement)
+    _add_paragraph_block(solution.problem_statement)
 
     h = doc.add_heading('Key Challenges', level=1)
     _add_bookmark(h, 'sec_key_challenges', bookmark_id)
     for challenge in solution.key_challenges:
-        p = doc.add_paragraph(style='List Bullet')
-        p.add_run(challenge)
-
+        text = _flatten_text(challenge)
+        if text:
+            p = doc.add_paragraph(style='List Bullet')
+            p.add_run(text)
     h = doc.add_heading('Our Solution Approach', level=1)
     _add_bookmark(h, 'sec_solution_approach', bookmark_id)
     for i, step in enumerate(solution.solution_approach, 1):
         doc.add_heading(f'{step.title}', level=2)
-        doc.add_paragraph(step.description)
+        _add_paragraph_block(step.description)
 
-    if solution.architecture_diagram:
+    if solution.architecture_diagram or solution.architecture_diagram_image:
         h = doc.add_heading('Architecture Diagram', level=1)
         bookmark_id = _add_bookmark(h, 'sec_architecture_diagram', bookmark_id)
-        image_path = render_mermaid_to_image(solution.architecture_diagram)
+        image_added = False
+        if solution.architecture_diagram_image:
+            try:
+                b64_data = solution.architecture_diagram_image.split(',', 1)[-1]
+                image_bytes = base64.b64decode(b64_data)
+                temp_path = os.path.join(tempfile.gettempdir(), f"arch_diagram_{datetime.now().timestamp()}.png")
+                with open(temp_path, "wb") as img_file:
+                    img_file.write(image_bytes)
+                doc.add_picture(temp_path, width=Inches(6.5))
+                os.remove(temp_path)
+                image_added = True
+            except Exception as ex:
+                safe_print(f"[WARN] Failed to use base64 architecture diagram: {ex}")
+        sanitized_diagram = _sanitize_mermaid_code(solution.architecture_diagram)
+        if not image_added and sanitized_diagram:
+            image_path = render_mermaid_to_image(sanitized_diagram)
         if image_path and os.path.exists(image_path):
             try:
-                doc.add_picture(image_path, width=Inches(6.0))
+                doc.add_picture(image_path, width=Inches(6.5))
                 os.remove(image_path)
+                image_added = True
             except Exception as e:
                 safe_print(f"[WARN] Error adding diagram to document: {str(e)}")
-                doc.add_paragraph("Architecture Diagram (fallback textual description):\n" + solution.architecture_diagram)
-        else:
-            safe_print("[INFO] Kroki diagram not available — using fallback text.")
-            doc.add_paragraph("Architecture Diagram (fallback textual description):\n" + solution.architecture_diagram)
+            if image_path and os.path.exists(image_path):
+                try:
+                    os.remove(image_path)
+                except Exception:
+                    pass
+        if not image_added and sanitized_diagram:
+            safe_print("[INFO] Rendering to image failed; including Mermaid code as fallback.")
+            doc.add_paragraph("Architecture Diagram (Mermaid code fallback):")
+            doc.add_paragraph(sanitized_diagram)
     h = doc.add_heading('Technology Stack', level=1)
     _add_bookmark(h, 'sec_technical_stack', bookmark_id)
-    for tech in solution.technical_stack:
-        p = doc.add_paragraph(style='List Bullet')
-        p.add_run(tech)
+    if solution.technical_stack:
+        cols = 3
+        rows = math.ceil(len(solution.technical_stack) / cols)
+        table = doc.add_table(rows=rows, cols=cols)
+        table.style = 'Table Grid'
+        for idx, tech in enumerate(solution.technical_stack):
+            r = idx // cols
+            c = idx % cols
+            table.cell(r, c).text = _flatten_text(tech)
+        for cell in table._cells:
+            _set_cell_alignment(cell)
+            for paragraph in cell.paragraphs:
+                paragraph.style = 'Normal'
 
     h = doc.add_heading('Key Milestones', level=1)
     _add_bookmark(h, 'sec_key_milestones', bookmark_id)
@@ -918,21 +1807,27 @@ def create_word_document(solution: GeneratedSolution) -> str:
                 run.font.bold = True
     for milestone in solution.milestones:
         row_cells = table.add_row().cells
-        row_cells[0].text = milestone.phase
-        row_cells[1].text = milestone.duration
-        row_cells[2].text = milestone.description
+        row_cells[0].text = _flatten_text(milestone.phase)
+        row_cells[1].text = _flatten_text(milestone.duration)
+        row_cells[2].text = _flatten_text(milestone.description, join_newlines=False)
+        for cell in row_cells:
+            _set_cell_alignment(cell)
 
     h = doc.add_heading('Objectives', level=1)
     _add_bookmark(h, 'sec_objectives', bookmark_id)
     for objective in solution.objectives:
-        p = doc.add_paragraph(style='List Bullet')
-        p.add_run(objective)
+        text = _flatten_text(objective, join_newlines=False)
+        if text:
+            p = doc.add_paragraph(style='List Bullet')
+            p.add_run(text)
 
     h = doc.add_heading('Acceptance Criteria', level=1)
     _add_bookmark(h, 'sec_acceptance_criteria', bookmark_id)
     for criteria in solution.acceptance_criteria:
-        p = doc.add_paragraph(style='List Bullet')
-        p.add_run(criteria)
+        text = _flatten_text(criteria, join_newlines=False)
+        if text:
+            p = doc.add_paragraph(style='List Bullet')
+            p.add_run(text)
 
     h = doc.add_heading('Resources', level=1)
     _add_bookmark(h, 'sec_resources', bookmark_id)
@@ -949,10 +1844,12 @@ def create_word_document(solution: GeneratedSolution) -> str:
                 run.font.bold = True
     for res in solution.resources:
         row = r_table.add_row().cells
-        row[0].text = res.role
+        row[0].text = _flatten_text(res.role)
         row[1].text = str(res.count)
         row[2].text = str(res.years_of_experience or '')
-        row[3].text = res.responsibilities or ""
+        row[3].text = _flatten_text(res.responsibilities or "", join_newlines=False)
+        for cell in row:
+            _set_cell_alignment(cell)
 
     h = doc.add_heading('Cost Analysis', level=1)
     _add_bookmark(h, 'sec_cost_analysis', bookmark_id)
@@ -968,9 +1865,11 @@ def create_word_document(solution: GeneratedSolution) -> str:
                 run.font.bold = True
     for ci in solution.cost_analysis:
         row = c_table.add_row().cells
-        row[0].text = ci.item
+        row[0].text = _flatten_text(ci.item)
         row[1].text = ci.cost
-        row[2].text = ci.notes or ""
+        row[2].text = _flatten_text(ci.notes or "", join_newlines=False)
+        for cell in row:
+            _set_cell_alignment(cell)
 
     # Add KPI Section
     h = doc.add_heading('Key Performance Indicators', level=1)
@@ -988,10 +1887,12 @@ def create_word_document(solution: GeneratedSolution) -> str:
                 run.font.bold = True
     for kpi in solution.key_performance_indicators:
         row = kpi_table.add_row().cells
-        row[0].text = kpi.metric
-        row[1].text = kpi.target
-        row[2].text = kpi.measurement_method
-        row[3].text = kpi.frequency or ""
+        row[0].text = _flatten_text(kpi.metric)
+        row[1].text = _flatten_text(kpi.target)
+        row[2].text = _flatten_text(kpi.measurement_method, join_newlines=False)
+        row[3].text = _flatten_text(kpi.frequency or "", join_newlines=False)
+        for cell in row:
+            _set_cell_alignment(cell)
 
     temp_dir = tempfile.gettempdir()
     doc_path = os.path.join(temp_dir, f'technical_proposal_{datetime.now().strftime("%Y%m%d_%H%M%S")}.docx')

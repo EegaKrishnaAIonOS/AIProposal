@@ -22,6 +22,11 @@ yarn-error.log*
 dist/
 build/
 
+# Generated Solutions and User Uploads
+backend/generated_solutions/
+backend/uploads/
+backend/solutions.db
+
 # OS/System files
 .DS_Store
 Thumbs.db
