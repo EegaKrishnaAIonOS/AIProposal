@@ -564,6 +564,7 @@ const RFPSolutionGenerator = () => {
           bottomOffset={(Array.isArray(recommendations) && recommendations.length > 0) ? (80 + recHeight + 12) : 88}
           offsetLeft={24}
           topOffset={processPopupTop}
+          centerVertically={true}
         />
       )}
       {/* Logout Modal */}

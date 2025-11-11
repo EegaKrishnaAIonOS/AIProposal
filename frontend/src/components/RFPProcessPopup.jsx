@@ -6,6 +6,7 @@ export default function RFPProcessPopup({
   bottomOffset = 24,
   offsetLeft = 24,
   topOffset = null,
+  centerVertically = false,
 }) {
   const [started, setStarted] = useState(false);
 
@@ -17,10 +18,11 @@ export default function RFPProcessPopup({
 
   if (!steps || steps.length === 0) return null;
 
-  const positioningStyle =
-    topOffset != null
-      ? { top: topOffset, left: offsetLeft, transform: 'translateZ(0)' }
-      : { bottom: bottomOffset, left: offsetLeft, transform: 'translateZ(0)' };
+  const positioningStyle = centerVertically
+    ? { top: '50%', left: offsetLeft, transform: 'translateY(-50%) translateZ(0)' }
+    : (topOffset != null
+        ? { top: topOffset, left: offsetLeft, transform: 'translateZ(0)' }
+        : { bottom: bottomOffset, left: offsetLeft, transform: 'translateZ(0)' });
 
   return (
     <div className="fixed z-50" style={positioningStyle}>
