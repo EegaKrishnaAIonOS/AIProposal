@@ -158,9 +158,9 @@ function Login({ onAuth }) {
       {/* Left Panel */}
       <div style={{ flex: 1, background: "linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)", color: "#fff", display: "flex", flexDirection: "column", justifyContent: "center", alignItems: "center", padding: "40px" }}>
         <h1 style={{ fontSize: "2.5rem", fontWeight: "bold", marginBottom: "1rem" }}>AI Proposals</h1>
-        <h2 style={{ fontSize: "1.25rem", fontWeight: "500", marginBottom: "1rem" }}>AI-Powered EDA & Anomaly Detection</h2>
+        <h2 style={{ fontSize: "1.25rem", fontWeight: "500", marginBottom: "1rem" }}>AI-Powered RFP Solution Generator</h2>
         <p style={{ fontSize: "1rem", maxWidth: "400px", textAlign: "justify" }}>
-          Enhance your proposals with enterprise-grade AI. Automate technical analysis and generate actionable insights for compelling, data-driven proposals.
+          Enhance your proposals with enterprise-grade AI.
         </p>
       </div>
       {/* Right Panel */}

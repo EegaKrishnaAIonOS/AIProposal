@@ -42,7 +42,7 @@ const ChatBox = ({solution,onScrollToSection}) => {
             const requestBody = {
                 message:userMessage,
                 solution_title: solution ? solution.title : null,
-                solution_content: solution ? JSON.stringify(solution.content) : null,
+                solution_content: solution ? JSON.stringify(solution) : null,
                 model: CHAT_MODEL,
             };
             const response = await fetch(CHAT_API_URL,{

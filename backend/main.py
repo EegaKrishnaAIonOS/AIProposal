@@ -205,6 +205,45 @@ def safe_print(*args, **kwargs) -> None:
             except Exception:
                 pass
 
+
+def _parse_currency_value(value: Optional[str]) -> Optional[float]:
+    """Convert a human-formatted currency string (e.g., ₹1,200,000) to a float."""
+    if not value or not isinstance(value, str):
+        return None
+    cleaned = re.sub(r"[^\d.,]", "", value)
+    if not cleaned:
+        return None
+    cleaned = cleaned.replace(",", "")
+    try:
+        return float(cleaned)
+    except ValueError:
+        return None
+
+
+def _format_currency(value: float, currency_symbol: str = "₹") -> str:
+    """Format a numeric value into a currency string with thousands separators."""
+    if value is None:
+        return "N/A"
+    if value.is_integer():
+        amount = f"{int(value):,}"
+    else:
+        amount = f"{value:,.2f}"
+    return f"{currency_symbol}{amount}"
+
+
+def _format_list_markers(text: str) -> str:
+    """Ensure numbered and bulleted lists render cleanly with one item per line."""
+    if not text:
+        return text
+    formatted = text
+    # Insert newline between sentences and numbered list markers (e.g., "... 2. Item")
+    formatted = re.sub(r'(?<=\S)\s+(?=\d+\.\s)', '\n', formatted)
+    # Insert newline before dash bullets appearing mid-line
+    formatted = re.sub(r'(?<=\S)\s+(?=-\s)', '\n', formatted)
+    # Collapse excessive blank lines
+    formatted = re.sub(r'\n{3,}', '\n\n', formatted)
+    return formatted.strip()
+
 class SolutionStep(BaseModel):
     title:str
     description:str
@@ -2145,44 +2184,167 @@ async def chat_with_groq(request: Request):
                         "action": {"type": "jump_to", "section": sec_id}
                     }
                 
-        # --- Filter out unrelated queries ---
-        allowed_keywords = [
-            "rfp", "proposal", "solution", "architecture", "cost", "objective",
-            "resource", "kpi", "problem", "criteria", "stack", "milestone", "technology", "hi", "hello", "how are you"
-        ]
+        # Check if solution content is available
+        has_solution_content = bool(solution_content)
+        
+        # If no solution content, inform user they need to generate a solution first
+        if not has_solution_content:
+            # Only allow basic greetings when no solution is available
+            greeting_keywords = ["hi", "hello", "hey", "greetings", "how are you", "what can you do"]
+            if not any(kw in message.lower() for kw in greeting_keywords):
+                return {
+                    "response": "I can only answer questions about your generated RFP solution. Please upload an RFP and generate a solution first, then ask me about its content.",
+                    "action": None
+                }
+        
+        # Parse and format solution content for better LLM understanding
+        solution_context = ""
+        if solution_content:
+            try:
+                # Parse JSON string if it's a string
+                if isinstance(solution_content, str):
+                    solution_data = json.loads(solution_content)
+                else:
+                    solution_data = solution_content
+                
+                # Format the solution data in a readable way for the LLM
+                tech_stack = solution_data.get('technical_stack', [])
+                tech_stack_str = ', '.join(tech_stack) if tech_stack and len(tech_stack) > 0 else 'Not specified'
+                
+                # Format solution approach safely
+                solution_approach_list = solution_data.get('solution_approach', [])
+                approach_lines = []
+                for i, step in enumerate(solution_approach_list[:3]):
+                    if isinstance(step, dict):
+                        title = step.get('title', 'Step')
+                        desc = step.get('description', '')[:100]
+                        approach_lines.append(f"  {i+1}. {title}: {desc}...")
+                    else:
+                        approach_lines.append(f"  {i+1}. {str(step)[:100]}...")
+                
+                # Format milestones safely
+                milestones_list = solution_data.get('milestones', [])
+                milestone_lines = []
+                for i, milestone in enumerate(milestones_list[:3]):
+                    if isinstance(milestone, dict):
+                        phase = milestone.get('phase', 'Phase')
+                        duration = milestone.get('duration', 'N/A')
+                        milestone_lines.append(f"  {i+1}. {phase}: {duration}")
+                    else:
+                        milestone_lines.append(f"  {i+1}. {str(milestone)[:100]}...")
+                
+                # Format cost analysis safely
+                cost_analysis_list = solution_data.get('cost_analysis', [])
+                cost_lines = []
 
-        if not any(kw in message for kw in allowed_keywords):
-            return {
-                "response": "I can only answer proposal-related questions. Please ask about your generated solution or proposal content.",
-                "action": None
-            }
+                # Identify any explicit total row (e.g., item name contains "total")
+                explicit_total_value = None
+                explicit_total_label = None
+                total_entries = len(cost_analysis_list)
+
+                for cost_item in cost_analysis_list:
+                    if isinstance(cost_item, dict):
+                        item_name = (cost_item.get('item') or "").lower()
+                        if "total" in item_name and explicit_total_value is None:
+                            explicit_total_value = cost_item.get('cost')
+                            explicit_total_label = cost_item.get('item')
+
+                # Prepare preview lines for the first few items
+                missing_cost_values = 0
+                for i, cost_item in enumerate(cost_analysis_list[:5]):
+                    if isinstance(cost_item, dict):
+                        item = cost_item.get('item', f'Item {i+1}')
+                        cost = cost_item.get('cost', 'N/A')
+                        notes = cost_item.get('notes', '')
+                        if notes:
+                            cost_lines.append(f"  {i+1}. {item}: {cost} ({notes[:120]}...)")
+                        else:
+                            cost_lines.append(f"  {i+1}. {item}: {cost}")
+                        if not cost or cost.strip().lower() in ("n/a", "na", "not available"):
+                            missing_cost_values += 1
+                    else:
+                        cost_lines.append(f"  {i+1}. {str(cost_item)[:120]}...")
+                        missing_cost_values += 1
+                if len(cost_analysis_list) > 5:
+                    cost_lines.append(f"  ...and {total_entries - 5} additional cost items.")
+
+                # Calculate total cost summary
+                if explicit_total_value:
+                    total_cost_summary = f"  Total Cost (as provided): {explicit_total_value}"
+                elif total_entries > 0:
+                    total_cost_summary = "  Total Cost: Not explicitly provided; list shows individual cost items."
+                else:
+                    total_cost_summary = "  No cost breakdown provided."
+                
+                solution_context = f"""
+Solution Title: {solution_data.get('title', solution_title or 'N/A')}
+Date: {solution_data.get('date', 'N/A')}
+
+Problem Statement: {solution_data.get('problem_statement', 'N/A')[:500]}...
+
+Key Challenges: {', '.join([str(c) for c in solution_data.get('key_challenges', [])[:5]])}...
+
+Technical Stack: {tech_stack_str}
+
+Solution Approach: {len(solution_approach_list)} steps defined
+{chr(10).join(approach_lines) if approach_lines else '  No steps defined'}
+
+Objectives: {len(solution_data.get('objectives', []))} objectives defined
+- {chr(10).join([f"  • {str(obj)[:100]}..." for obj in solution_data.get('objectives', [])[:3]]) if solution_data.get('objectives') else '  No objectives defined'}
+
+Milestones: {len(milestones_list)} phases
+{chr(10).join(milestone_lines) if milestone_lines else '  No milestones defined'}
+
+Resources: {len(solution_data.get('resources', []))} roles defined
+
+Cost Analysis: {len(solution_data.get('cost_analysis', []))} items
+{chr(10).join(cost_lines) if cost_lines else '  No cost breakdown provided'}
+{total_cost_summary}
+
+Key Performance Indicators: {len(solution_data.get('key_performance_indicators', []))} KPIs defined
+"""
+            except (json.JSONDecodeError, TypeError, AttributeError) as e:
+                safe_print(f"[WARN] Failed to parse solution content: {e}")
+                solution_context = f"Solution Content (raw): {solution_content[:1000]}"
+        else:
+            solution_context = "No solution content available."
                 
         prompt = f"""
-        You are a friendly AI assistant integrated into an RFP Solution Generator app.
-        - If the user asks about navigation, reply with a short message.
-        - If the user asks about technical content, use the given solution JSON for context.
-        - Be concise and relevant.
+You are a friendly AI assistant integrated into an RFP Solution Generator app.
+Your role is to answer questions about the generated RFP solution based on the context provided below.
 
-        Solution Content(if Avaliable):
-        Title: {solution_title or 'N/A'}
-        Content: {solution_content or 'No solution yet.'}
+CRITICAL RULES:
+1. You MUST answer questions based ONLY on the solution content provided below.
+2. You MUST NOT use any external knowledge or general information.
+3. If specific details are missing, clearly state: "This information is not available in the generated RFP solution," and explain any assumptions or gaps.
+4. Only use the redirect message ("I can only answer questions about your generated RFP solution...") if the question is clearly unrelated (e.g., weather, sports, jokes). Otherwise, do your best to answer using the solution context.
+5. When summarising or listing items, format each bullet or numbered point on its own line using plain text (e.g., "1. Item detail"). Avoid duplicate asterisks, extra Markdown, or multiple points on the same line.
+6. If cost amounts are provided, calculate totals or subtotals directly from those figures. If any amounts are missing, explain which items lack data and whether the total is partial or unavailable.
+7. Be accurate, helpful, and concise. When comparing or aligning items (e.g., objectives vs. use case), reference the relevant parts of the solution and describe how they relate.
 
-        User Question:
-        {message}
-        """
+Solution Content:
+{solution_context}
+
+User Question: {message}
+
+Provide a helpful answer based ONLY on the solution content above. If the question cannot be fully answered from the solution content, explain what is available and what information is missing.
+"""
         response = groq_client.chat.completions.create(
             model=GROQ_MODEL,
             messages=[
-                {"role": "system", "content": "You are a helpful assistant for technical RFP proposal app"},
+                {"role": "system", "content": "You are a helpful assistant for technical RFP proposal app. Answer questions accurately based on the provided solution content."},
                 {"role": "user", "content": prompt}
             ],
             temperature=0.4,
-            max_tokens=300
+            max_tokens=500
         )
         answer = response.choices[0].message.content.strip()
+        answer = _format_list_markers(answer)
         return {"response": answer, "action": None}
     except Exception as e:
         safe_print("Chat API Error:", str(e))
+        import traceback
+        traceback.print_exc()
         return {"response": "Sorry, something went wrong while generating a reply.", "action": None}
 
 @app.post("/api/tender-chat")
